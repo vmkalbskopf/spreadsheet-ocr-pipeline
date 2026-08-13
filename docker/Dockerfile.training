@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements-training.txt .
+COPY docker/requirements-training.txt .
 RUN pip3 install --no-cache-dir -r requirements-training.txt
 
 COPY src/training/ ./src/training/
@@ -21,6 +21,9 @@ COPY config/ ./config/
 # Data, manifests, and checkpoints are bind-mounted at runtime:
 #   -v $(pwd)/data:/app/data -v $(pwd)/checkpoints:/app/checkpoints
 # Default entrypoint runs training; override for prepare_dataset.py /
-# export_awq.py / teds_eval.py as needed (see docker-compose.yml).
+# export_awq.py / teds_eval.py as needed. In the Dagster orchestration
+# layer (orchestration/dagster/resources.py) this override is done via
+# `docker run --entrypoint ...`, one call per script -- see DockerRunner
+# .run_training(entrypoint_override=...).
 ENTRYPOINT ["python3", "src/training/train_qlora.py"]
 CMD ["--config", "config/train_qlora.yaml"]
