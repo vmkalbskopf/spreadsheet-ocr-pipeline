@@ -1,0 +1,7 @@
+requests>=2.32
+PyYAML>=6.0
+pandas>=2.2
+openpyxl>=3.1     # xlsx support for pandas
+odfpy>=1.4        # ods support for pandas
+chardet>=5.2       # encoding detection for gov-data downloads
+kaggle>=1.6        # only needed if running scrape_kaggle.py

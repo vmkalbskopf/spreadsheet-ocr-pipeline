@@ -69,13 +69,17 @@ Then materialize assets from the Dagster UI, or via `dagster asset materialize -
   exercise the vision tower during calibration, which is a real quality
   gap for a model whose job is reading images. `llm-compressor` has more
   consistent multimodal calibration support if this proves to matter.
-- **`src/data_collection/` is unimplemented** (Kaggle/gov-data scraping,
-  dedup, normalization) -- stubbed in `config/data_sources.yaml` only.
 - **Excel rendering path is unimplemented** -- screenshots currently fall
   back to LibreOffice Calc even when Excel is sampled in
   `screenshot_variation.yaml`. Needs Windows/COM automation (`xlwings`)
   or a VM, which is a meaningfully different automation stack from the
   Linux/UNO path already built.
+- **GitHub scraping requires `GITHUB_TOKEN`**; Kaggle scraping requires
+  `~/.kaggle/kaggle.json` or `KAGGLE_USERNAME`/`KAGGLE_KEY`. Neither
+  scraper has been run against live APIs in this environment (network
+  access here is restricted to package registries) -- the normalize and
+  dedup/binning stages *have* been tested end-to-end against synthetic
+  staged files, including exact-dup, near-dup, and license-gate cases.
 
 ## Directory layout
 
@@ -87,10 +91,12 @@ config/
 
 src/
   data_collection/
-    scrape_kaggle.py        # Kaggle API pull, license-filtered
-    scrape_gov_data.py      # data.gov / data.norge.no / Eurostat pulls
-    dedup_and_bin.py        # content-hash dedup, bins into row x col grid
-    normalize_to_csv.py     # xlsx/ods/tsv/json -> canonical CSV
+    common.py                # shared: manifests, hashing, license gate, near-dup signatures
+    scrape_kaggle.py         # Kaggle API, license-filtered at search time
+    scrape_gov_data.py       # data.gov (CKAN) + data.norge.no (DCAT) + Eurostat (SDMX)
+    scrape_github.py         # GitHub code search for standalone .csv files
+    normalize_to_csv.py      # xlsx/xls/ods/tsv/json -> canonical CSV, computes row/col counts
+    dedup_and_bin.py         # license gate + exact/near dedup + shape-bin balancing -> data/raw_csv/
 
   screenshot_generation/
     variation_sampler.py    # samples one random UI configuration per screenshot
@@ -125,11 +131,13 @@ orchestration/dagster/
 ## Suggested run order
 
 ```bash
-# 1. Data collection (not yet implemented -- see src/data_collection/ stubs)
+# 1. Data collection (writes to data/staging/, then data/raw_csv/)
 python src/data_collection/scrape_kaggle.py --config config/data_sources.yaml
 python src/data_collection/scrape_gov_data.py --config config/data_sources.yaml
-python src/data_collection/normalize_to_csv.py
+GITHUB_TOKEN=ghp_xxx python src/data_collection/scrape_github.py --config config/data_sources.yaml
+python src/data_collection/normalize_to_csv.py --config config/data_sources.yaml
 python src/data_collection/dedup_and_bin.py --config config/data_sources.yaml
+# install: pip install -r src/data_collection/requirements.txt
 
 # 2. Build containers
 docker build -f docker/Dockerfile.screenshot-gen -t spreadsheet-ocr/screenshot-gen:latest .

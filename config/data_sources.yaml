@@ -1,26 +1,53 @@
 # Data source and dataset-shape configuration
 
+# Global license gate, applied at final dedup_and_bin.py stage regardless of
+# source. Per-source config below can ALSO filter earlier (cheaper to skip
+# a download than to discard it after the fact), but this is the single
+# source of truth for what's allowed into the training set.
+license_policy:
+  allowed_licenses:
+    ["CC0-1.0", "CC-BY-4.0", "CC-BY-SA-4.0", "MIT", "ODbL-1.0", "PDDL-1.0", "public-domain"]
+  # Government open-data portals (data.gov, data.norge.no, Eurostat) are
+  # policy-vetted at the portal level, so datasets from those sources are
+  # kept even when per-dataset license metadata is missing/unstructured --
+  # still recorded verbatim in the manifest for auditability, just not used
+  # as a filter gate the way it is for Kaggle/GitHub.
+  trust_portal_level_for_sources: ["gov_data"]
+  # For sources NOT in trust_portal_level_for_sources (kaggle, github_csv_search):
+  # a dataset with missing/unrecognized license metadata is dropped, not kept.
+  unknown_license_action: "drop"
+
 sources:
   kaggle:
     enabled: true
-    # Only pull datasets with these licenses (adjust to your institution's policy)
-    allowed_licenses: ["CC0-1.0", "CC-BY-4.0", "CC-BY-SA-4.0", "MIT", "ODbL-1.0"]
     max_datasets: 5000
     query_terms: ["csv", "spreadsheet", "survey", "inventory", "records"]
 
   gov_data:
     enabled: true
-    endpoints:
-      - "https://catalog.data.gov/api/3/action/package_search"
-      - "https://data.norge.no/api/dcat/datasets"   # useful for NO/Nordic headers
-      - "https://ec.europa.eu/eurostat/api/dissemination"
-    max_datasets: 5000
+    data_gov:
+      enabled: true
+      endpoint: "https://catalog.data.gov/api/3/action/package_search"
+      query_terms: ["csv", "dataset", "survey", "inventory"]
+      max_datasets: 2000
+    data_norge:
+      enabled: true
+      endpoint: "https://data.norge.no/api/dcat/datasets"   # useful for NO/Nordic headers
+      max_datasets: 1500
+    eurostat:
+      enabled: true
+      endpoint: "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data"
+      # Eurostat isn't a free-text-searchable catalog like CKAN -- you fetch
+      # by known dataset code. Fill in codes of interest here; the table
+      # listing at https://ec.europa.eu/eurostat/databrowser/ has the codes.
+      dataset_codes: ["tps00001", "nama_10_gdp", "demo_pjan"]
 
   github_csv_search:
     enabled: true
-    # Uses github.com code search API for standalone .csv files
+    # Uses GitHub's code search API for standalone .csv files
     max_files: 5000
-    min_stars: 0   # intentionally unfiltered; dedup handles junk
+    min_stars: 0   # intentionally unfiltered; dedup + license gate handle junk
+    query_terms: ["extension:csv"]
 
 # Dataset shape targets: sample log-uniformly across BOTH axes independently
 # so combinations like "20 rows x 100 cols" are represented, not just the
@@ -38,8 +65,13 @@ shape_bins:
 
 dedup:
   method: "content_hash"   # sha256 over normalized (sorted columns, stripped whitespace) content
-  near_dup_threshold: 0.97  # cosine sim on column-header + dtype signature, catches re-uploads
+  near_dup_threshold: 0.97  # jaccard sim on column-header + dtype signature, catches re-uploads
 
 output:
-  raw_csv_dir: "data/raw_csv"
-  manifest_path: "data/manifests/sources_manifest.jsonl"
+  staging_dir: "data/staging/raw_downloads"      # scrapers write here, any format
+  normalized_dir: "data/staging/normalized"      # normalize_to_csv.py writes canonical CSVs here
+  raw_csv_dir: "data/raw_csv"                    # dedup_and_bin.py's final accepted output
+  sources_manifest_path: "data/manifests/sources_manifest.jsonl"     # scraper provenance
+  normalized_manifest_path: "data/manifests/normalized_manifest.jsonl"
+  final_manifest_path: "data/manifests/raw_csv_manifest.jsonl"       # what training reads from
+
