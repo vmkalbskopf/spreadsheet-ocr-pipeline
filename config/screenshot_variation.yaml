@@ -1,0 +1,71 @@
+# Every screenshot samples ONE random draw from each of these axes.
+# Keep expanding this file as you discover failure modes during eval —
+# it's the single highest-leverage file in the whole pipeline for
+# real-world generalization.
+
+software:
+  # Weighted so Excel is represented even though LibreOffice is the
+  # cheaper/more automatable default on Linux/HPC.
+  options:
+    libreoffice_calc: 0.65
+    excel: 0.35
+
+theme:
+  options: ["light", "dark"]
+  weights: [0.8, 0.2]   # dark mode less common but not negligible
+
+zoom_pct:
+  min: 70
+  max: 150
+
+gridlines: [true, false]
+
+frozen_panes:
+  # probability of freezing rows/cols at all, then how many
+  probability: 0.3
+  max_frozen_rows: 2
+  max_frozen_cols: 2
+
+column_width:
+  mode_weights:
+    auto_fit: 0.5
+    manual_narrow: 0.25   # induces "###" truncation on numeric cells
+    manual_wide: 0.25
+
+row_height:
+  mode_weights:
+    default: 0.7
+    manual: 0.3
+
+font:
+  families: ["Liberation Sans", "Calibri", "Arial", "DejaVu Sans", "Cambria"]
+  size_pt: {min: 8, max: 14}
+
+cell_highlight:
+  probability: 0.4        # a selected cell/range with the blue highlight box
+  max_selected_cells: 40
+
+scroll_crop:
+  # Real screenshots frequently don't show the whole sheet.
+  probability: 0.7
+  crop_top_pct:    {min: 0, max: 0.3}
+  crop_bottom_pct: {min: 0, max: 0.3}
+  crop_left_pct:   {min: 0, max: 0.2}
+  crop_right_pct:  {min: 0, max: 0.2}
+
+conditional_formatting:
+  probability: 0.2
+  types: ["color_scale", "data_bar", "icon_set"]
+
+filter_dropdowns:
+  probability: 0.3        # visible filter arrows on header row
+
+os_window_chrome:
+  options: ["gnome", "kde", "windows11", "macos"]
+  weights: [0.35, 0.15, 0.35, 0.15]
+
+display:
+  resolution_options: ["1920x1080", "2560x1440", "1366x768", "3840x2160"]
+  dpi_scaling_options: [1.0, 1.25, 1.5, 2.0]
+
+n_variants_per_csv: 4   # how many randomized screenshots to render per source CSV

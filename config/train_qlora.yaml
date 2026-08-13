@@ -1,0 +1,65 @@
+# QLoRA fine-tuning config for Qwen2.5-VL-3B-Instruct on a single 40GB GPU.
+# Rationale for the 3B (not 7B) choice: leaves VRAM headroom to push input
+# image resolution up, which matters more than parameter count for reading
+# small spreadsheet cell text. See README / conversation notes for the
+# 7B fallback if 3B underperforms on dense sheets.
+
+model:
+  base_model: "Qwen/Qwen2.5-VL-3B-Instruct"
+  quantization: "4bit"          # bitsandbytes nf4 for the frozen base weights
+  compute_dtype: "bfloat16"
+
+lora:
+  r: 32
+  alpha: 64
+  dropout: 0.05
+  target_modules:               # attention + MLP projections, standard QLoRA target set
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  # Vision tower: keep frozen initially. If eval shows the base model's
+  # visual encoder doesn't resolve small spreadsheet fonts well even after
+  # LoRA on the language side, revisit and add vision-tower LoRA targets.
+  train_vision_tower: false
+
+image:
+  # Higher than the model's default pretraining resolution -- spreadsheet
+  # cell text is dense and small relative to typical VLM training images.
+  max_pixels: 1_600_000        # ~1600x1000 equivalent after tiling
+  min_pixels: 200_000
+
+data:
+  train_manifest: "data/manifests/train.jsonl"
+  val_manifest: "data/manifests/val.jsonl"
+  # Target text is raw CSV. JSON-per-row is an alternative if raw-CSV
+  # parsing proves too brittle during eval -- flip this and adjust
+  # prepare_dataset.py's target formatting together.
+  target_format: "csv"
+  max_target_tokens: 4096       # covers a few-hundred-row x 15-col sheet comfortably
+
+training:
+  output_dir: "checkpoints/qwen25vl-3b-spreadsheet-ocr"
+  num_train_epochs: 3
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 8   # effective batch size 16
+  learning_rate: 2.0e-4
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.03
+  weight_decay: 0.0
+  logging_steps: 10
+  eval_steps: 200
+  save_steps: 200
+  save_total_limit: 3
+  bf16: true
+  gradient_checkpointing: true   # needed to stay inside 40GB at this image resolution
+  report_to: "none"              # switch to "wandb" if you use it
+
+# Rough VRAM budget at these settings (batch 2, ~1.6MP images, r=32 LoRA):
+#   4-bit base weights:      ~2.5 GB
+#   LoRA params + optimizer: ~1 GB
+#   Activations (grad ckpt): ~15-20 GB depending on image resolution actually sampled
+#   Total: comfortably under 40GB with room to raise batch size if val loss plateaus early

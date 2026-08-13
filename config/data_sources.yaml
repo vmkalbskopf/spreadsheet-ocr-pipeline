@@ -1,0 +1,45 @@
+# Data source and dataset-shape configuration
+
+sources:
+  kaggle:
+    enabled: true
+    # Only pull datasets with these licenses (adjust to your institution's policy)
+    allowed_licenses: ["CC0-1.0", "CC-BY-4.0", "CC-BY-SA-4.0", "MIT", "ODbL-1.0"]
+    max_datasets: 5000
+    query_terms: ["csv", "spreadsheet", "survey", "inventory", "records"]
+
+  gov_data:
+    enabled: true
+    endpoints:
+      - "https://catalog.data.gov/api/3/action/package_search"
+      - "https://data.norge.no/api/dcat/datasets"   # useful for NO/Nordic headers
+      - "https://ec.europa.eu/eurostat/api/dissemination"
+    max_datasets: 5000
+
+  github_csv_search:
+    enabled: true
+    # Uses github.com code search API for standalone .csv files
+    max_files: 5000
+    min_stars: 0   # intentionally unfiltered; dedup handles junk
+
+# Dataset shape targets: sample log-uniformly across BOTH axes independently
+# so combinations like "20 rows x 100 cols" are represented, not just the
+# "typical" region near a few hundred rows x 15 cols.
+shape_bins:
+  rows:
+    min: 30
+    max: 3000
+    n_bins: 6          # log-spaced bin edges
+  cols:
+    min: 2
+    max: 150
+    n_bins: 6
+  target_per_bin: 150   # aim for ~even coverage; oversample-heavy bins get capped
+
+dedup:
+  method: "content_hash"   # sha256 over normalized (sorted columns, stripped whitespace) content
+  near_dup_threshold: 0.97  # cosine sim on column-header + dtype signature, catches re-uploads
+
+output:
+  raw_csv_dir: "data/raw_csv"
+  manifest_path: "data/manifests/sources_manifest.jsonl"

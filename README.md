@@ -1,0 +1,120 @@
+# Spreadsheet Screenshot OCR Pipeline
+
+Trains a vision-language model (Qwen2.5-VL-3B) to reconstruct structured CSV
+data from realistic screenshots of spreadsheet software (LibreOffice Calc,
+Excel). Designed for a single 40GB-VRAM training workstation, with inference
+targeting a laptop with a small discrete GPU (4-6GB VRAM, AWQ 4-bit).
+
+## Pipeline stages
+
+```
+1. data_collection/     Scrape + dedup + normalize real public spreadsheets to CSV
+2. screenshot_generation/  Render each CSV in Calc/Excel with randomized UI state,
+                            capture real screenshots (not synthetic mockups)
+3. training/             QLoRA fine-tune Qwen2.5-VL-3B on (screenshot, csv) pairs,
+                            then export to AWQ 4-bit for laptop inference
+4. eval/                 TEDS-based structural accuracy, not raw string match
+```
+
+## Orchestration (Dagster + Docker, not Slurm)
+
+Two Docker images, no shared host processes:
+
+- `docker/Dockerfile.screenshot-gen` — CPU-only: LibreOffice + Xvfb + UNO.
+  Each container instance runs one shard in isolation, which means the
+  hardcoded Xvfb display (`:99`) and soffice port (`2002`) never collide
+  across concurrently-running shards — isolation is free from
+  containerization, no port/display parameterization needed.
+- `docker/Dockerfile.training` — GPU: PyTorch + QLoRA/AWQ stack. Runs
+  `prepare_dataset.py`, `train_qlora.py`, `export_awq.py`, and
+  `teds_eval.py` via entrypoint overrides (same image, different script).
+
+Build both:
+```bash
+docker build -f docker/Dockerfile.screenshot-gen -t spreadsheet-ocr/screenshot-gen:latest .
+docker build -f docker/Dockerfile.training -t spreadsheet-ocr/training:latest .
+```
+
+Dagster (`orchestration/dagster/`) replaces the two `.sbatch` scripts:
+- `screenshot_shard` is a partitioned asset (one partition per shard),
+  each partition launching its own `screenshot-gen` container. Dagster's
+  run queue controls concurrency (set `max_concurrent_runs` based on your
+  workstation's cores — each shard is light, ~1 core / a few hundred MB).
+- Per-partition retries (`RetryPolicy`) replace what Slurm's array-job
+  retry gave you for free — without this, a flaky shard silently needs a
+  manual rerun.
+- `training_manifests` depends on *all* shard partitions completing, then
+  the rest of the graph (`trained_model` → `awq_export` / `eval_results`)
+  runs as single GPU container invocations.
+
+```bash
+cd orchestration/dagster
+PROJECT_ROOT=/absolute/path/to/spreadsheet-ocr-pipeline \
+DAGSTER_HOME=$(pwd)/.dagster_home dagster dev
+```
+Then materialize assets from the Dagster UI, or via `dagster asset materialize --select "*"`.
+
+## Directory layout
+
+```
+config/
+  data_sources.yaml         # source APIs, license allowlist, row/col binning targets
+  screenshot_variation.yaml # ranges for all randomized rendering parameters
+  train_qlora.yaml          # LoRA rank, quantization, image resolution, hyperparams
+
+src/
+  data_collection/
+    scrape_kaggle.py        # Kaggle API pull, license-filtered
+    scrape_gov_data.py      # data.gov / data.norge.no / Eurostat pulls
+    dedup_and_bin.py        # content-hash dedup, bins into row x col grid
+    normalize_to_csv.py     # xlsx/ods/tsv/json -> canonical CSV
+
+  screenshot_generation/
+    variation_sampler.py    # samples one random UI configuration per screenshot
+    render_libreoffice.py   # UNO automation: load CSV, apply config, save state
+    capture.py              # Xvfb + window capture -> PNG
+    generate_dataset.py     # orchestrates sampler + render + capture per CSV
+
+  training/
+    prepare_dataset.py      # builds HF Dataset of (image, target_csv_text) pairs
+    train_qlora.py          # QLoRA fine-tune entrypoint
+    export_awq.py           # post-training AWQ quantization for laptop inference
+
+  eval/
+    teds_eval.py            # tree-edit-distance table similarity scoring
+
+data/
+  raw_csv/                  # canonical ground-truth CSVs, binned by size
+  screenshots/              # rendered screenshots, mirrors raw_csv structure
+  manifests/                # JSONL manifests linking screenshot <-> csv <-> config
+
+docker/
+  Dockerfile.screenshot-gen    # CPU image: LibreOffice + Xvfb + UNO
+  Dockerfile.training          # GPU image: PyTorch + QLoRA/AWQ stack
+  requirements-*.txt
+
+orchestration/dagster/
+  assets.py                    # partitioned screenshot_shard -> training graph
+  resources.py                 # DockerRunner: wraps `docker run` per asset
+  definitions.py               # Dagster entrypoint
+```
+
+## Suggested run order
+
+```bash
+# 1. Data collection (not yet implemented -- see src/data_collection/ stubs)
+python src/data_collection/scrape_kaggle.py --config config/data_sources.yaml
+python src/data_collection/scrape_gov_data.py --config config/data_sources.yaml
+python src/data_collection/normalize_to_csv.py
+python src/data_collection/dedup_and_bin.py --config config/data_sources.yaml
+
+# 2. Build containers
+docker build -f docker/Dockerfile.screenshot-gen -t spreadsheet-ocr/screenshot-gen:latest .
+docker build -f docker/Dockerfile.training -t spreadsheet-ocr/training:latest .
+
+# 3. Run everything else via Dagster
+cd orchestration/dagster
+PROJECT_ROOT=$(cd ../.. && pwd) DAGSTER_HOME=$(pwd)/.dagster_home dagster dev
+# then materialize assets from the UI, or:
+dagster asset materialize --select "*"
+```
