@@ -22,6 +22,15 @@ class DockerRunner(ConfigurableResource):
         return [
             "-v", f"{root / 'data'}:/app/data",
             "-v", f"{root / 'checkpoints'}:/app/checkpoints",
+            # config/ is COPY'd at build time in both Dockerfiles for a
+            # reproducible image, but that means editing a .yaml on the host
+            # has NO effect until the image is rebuilt -- easy to miss and
+            # debug a "why didn't my config change do anything" mystery.
+            # Mounting it read-only here means edits take effect immediately
+            # on the next container run, no rebuild needed. The build-time
+            # COPY stays in the Dockerfiles too, so images remain
+            # self-contained if you ever run one outside this mount setup.
+            "-v", f"{root / 'config'}:/app/config:ro",
         ]
 
     def run_screenshot_gen(self, shard_index: int, n_shards: int) -> None:

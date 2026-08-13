@@ -75,12 +75,25 @@ def run_awq_quantization(merged_model_dir: str, calib_records: list[dict], out_d
         "version": "GEMM",  # GEMM kernel: better throughput on small discrete GPUs than GEMV at this batch=1 use case
     }
 
-    # NOTE: AWQ's vision-language calibration support varies by library
-    # version -- as of writing, multimodal AWQ calibration APIs are less
-    # standardized than text-only. Verify against the awq library version
-    # you pin before relying on this path; the text-only calibration
-    # fallback below (calibrating on target CSV text alone) is a reasonable
-    # degraded option if full multimodal calibration isn't supported yet.
+    # KNOWN LIMITATION, not just a version-compatibility footnote: AWQ scales
+    # activations per-channel based on what actually flows through the
+    # model during calibration. Calibrating on target CSV TEXT ALONE means
+    # the vision tower and cross-modal projector are never exercised during
+    # calibration -- their activation statistics are absent from the scale
+    # computation entirely. That's a real quality gap for a model whose
+    # whole job is reading dense text out of images, not a minor detail.
+    #
+    # Preferred fix: calibrate with the actual (image, prompt) pairs so
+    # vision-tower activations inform the scales. AutoAWQ's multimodal
+    # calibration support is inconsistent across versions -- check whether
+    # your pinned version's `model.quantize()` accepts image inputs in
+    # `calib_data` (varies by release). If it doesn't, `llm-compressor`
+    # (https://github.com/vllm-project/llm-compressor) has more consistent
+    # multimodal quantization support and is worth switching to rather than
+    # working around AutoAWQ's gaps here.
+    #
+    # Fallback used below (text-only) is what's currently implemented --
+    # treat it as a placeholder to replace, not a validated design choice.
     calib_texts = [r["target"] for r in calib_records]
 
     model.quantize(quant_config=quant_config, calib_data=calib_texts)

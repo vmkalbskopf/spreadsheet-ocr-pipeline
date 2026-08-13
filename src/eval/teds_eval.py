@@ -94,14 +94,55 @@ def score_example(pred_text: str, gt_text: str) -> EvalResult:
     )
 
 
-def run_model_inference(checkpoint: str, image_path: str, prompt: str) -> str:
-    """Placeholder for actual model inference call -- wire up to your
-    trained checkpoint (or the AWQ-quantized export, to eval the exact
-    artifact that ships to laptops) once training completes."""
-    raise NotImplementedError(
-        "Wire this up to transformers.pipeline or the AWQ inference API "
-        "once you have a checkpoint to evaluate."
+_MODEL_CACHE: dict = {}
+
+
+def _load_model(checkpoint: str):
+    """Loads once per process and caches -- teds_eval.py iterates the full
+    val manifest, and reloading a VLM per example would dominate runtime."""
+    if checkpoint in _MODEL_CACHE:
+        return _MODEL_CACHE[checkpoint]
+
+    import torch
+    from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
+
+    model = Qwen2VLForConditionalGeneration.from_pretrained(
+        checkpoint, torch_dtype=torch.bfloat16, device_map="auto"
     )
+    processor = AutoProcessor.from_pretrained(checkpoint)
+    _MODEL_CACHE[checkpoint] = (model, processor)
+    return model, processor
+
+
+def run_model_inference(checkpoint: str, image_path: str, prompt: str) -> str:
+    """Runs a single (image, prompt) -> generated text inference pass.
+
+    This loads the merged fp16/bf16 checkpoint via plain transformers, NOT
+    the AWQ-quantized export -- fine for tracking training progress, but if
+    you want to validate the exact artifact that ships to laptops, point
+    --checkpoint at the AWQ output dir and swap this for AutoAWQ's
+    generate() call instead (interface differs slightly from transformers').
+    """
+    import torch
+    from PIL import Image
+
+    model, processor = _load_model(checkpoint)
+
+    image = Image.open(image_path).convert("RGB")
+    messages = [
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": prompt}]}
+    ]
+    chat_prompt = processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    inputs = processor(text=[chat_prompt], images=[image], return_tensors="pt").to(model.device)
+
+    with torch.no_grad():
+        output_ids = model.generate(**inputs, max_new_tokens=4096, do_sample=False)
+
+    # Slice off the prompt tokens so we only decode the newly generated text
+    generated_ids = output_ids[:, inputs["input_ids"].shape[1] :]
+    return processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
 
 
 def main():
@@ -125,6 +166,26 @@ def main():
     print(f"Mean cell accuracy:     {sum(r.cell_accuracy for r in results) / n:.4f}")
     print(f"Mean row recall:        {sum(r.row_recall for r in results) / n:.4f}")
     print(f"Header exact match:     {sum(r.header_exact_match for r in results) / n:.4f}")
+
+    # Breakdown by ground-truth row count. The token-explosion / large-table
+    # problem (see conversation notes -- deferred pending eval evidence) is
+    # exactly what this surfaces: if accuracy holds roughly flat across
+    # buckets, the current end-to-end approach is fine as-is; a steep drop
+    # in the largest bucket is the concrete evidence needed to justify
+    # building tiling/windowing rather than guessing.
+    buckets = [(0, 50), (50, 150), (150, 500), (500, 3000)]
+    print("\nBy table size (row count):")
+    for lo, hi in buckets:
+        bucket_results = [r for r in results if lo <= r.n_gt_rows < hi]
+        if not bucket_results:
+            continue
+        n_b = len(bucket_results)
+        mean_cell_acc = sum(r.cell_accuracy for r in bucket_results) / n_b
+        mean_row_recall = sum(r.row_recall for r in bucket_results) / n_b
+        print(
+            f"  {lo:>4}-{hi:<4} rows  (n={n_b:>3}):  "
+            f"cell_acc={mean_cell_acc:.4f}  row_recall={mean_row_recall:.4f}"
+        )
 
 
 if __name__ == "__main__":

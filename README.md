@@ -54,6 +54,29 @@ DAGSTER_HOME=$(pwd)/.dagster_home dagster dev
 ```
 Then materialize assets from the Dagster UI, or via `dagster asset materialize --select "*"`.
 
+## Known limitations / deferred decisions
+
+- **Large-table token explosion**: end-to-end auto-regressive CSV generation
+  means a ~100x15 table is 3,000-6,000+ tokens, which is slow to generate
+  on a laptop GPU and prone to cascading errors from a single dropped
+  delimiter. Deferred intentionally: `src/eval/teds_eval.py` now reports
+  accuracy broken down by row-count bucket, and `train_qlora.py` logs a
+  warning when truncation fully masks an example's labels. Use those
+  signals to decide whether a windowed-tiling or 2-stage
+  detector-then-VLM architecture is actually justified, rather than
+  building it preemptively.
+- **AWQ calibration is text-only** (`src/training/export_awq.py`): doesn't
+  exercise the vision tower during calibration, which is a real quality
+  gap for a model whose job is reading images. `llm-compressor` has more
+  consistent multimodal calibration support if this proves to matter.
+- **`src/data_collection/` is unimplemented** (Kaggle/gov-data scraping,
+  dedup, normalization) -- stubbed in `config/data_sources.yaml` only.
+- **Excel rendering path is unimplemented** -- screenshots currently fall
+  back to LibreOffice Calc even when Excel is sampled in
+  `screenshot_variation.yaml`. Needs Windows/COM automation (`xlwings`)
+  or a VM, which is a meaningfully different automation stack from the
+  Linux/UNO path already built.
+
 ## Directory layout
 
 ```

@@ -69,52 +69,111 @@ def build_model_and_processor(cfg: dict):
 
 
 def build_collate_fn(processor, cfg: dict):
+    """
+    Builds (input_ids, labels) with the FULL user+assistant turn encoded
+    together, then masks prompt+image tokens in labels to -100 so loss is
+    only computed on the target CSV tokens.
+
+    This requires two processor passes per example:
+      1. prompt-only (user turn, add_generation_prompt=True), UNPADDED,
+         run per-example with that example's own image -- this gives the
+         exact prompt token count *including* the image tokens Qwen2-VL
+         interleaves into input_ids, which varies per image depending on
+         the number of patches at the sampled resolution. There's no
+         shortcut here: image token count isn't known without running the
+         processor on that specific image.
+      2. full text (user turn + assistant target), BATCHED with padding --
+         this produces the actual training tensors.
+    Given (1), we know exactly how many leading tokens in each row of (2)
+    belong to the prompt, so we mask that prefix (plus any right-padding)
+    to -100 and leave the target CSV tokens as the loss target.
+    """
+    max_len = cfg["data"]["max_target_tokens"]
+
+    def _prompt_len(image, prompt_text: str) -> int:
+        prompt_only = processor(
+            text=[prompt_text], images=[image], padding=False, return_tensors="pt"
+        )
+        return prompt_only.input_ids.shape[1]
+
     def collate(batch: list[dict]):
         images = [Image.open(r["image_path"]).convert("RGB") for r in batch]
         prompts = [r["prompt"] for r in batch]
         targets = [r["target"] for r in batch]
 
-        messages = [
-            [
-                {
-                    "role": "user",
-                    "content": [{"type": "image"}, {"type": "text", "text": p}],
-                }
-            ]
+        prompt_messages = [
+            [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": p}]}]
             for p in prompts
         ]
-        chat_prompts = [
+        prompt_texts = [
             processor.apply_chat_template(m, tokenize=False, add_generation_prompt=True)
-            for m in messages
+            for m in prompt_messages
         ]
 
+        full_messages = [
+            [
+                {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": p}]},
+                {"role": "assistant", "content": [{"type": "text", "text": t}]},
+            ]
+            for p, t in zip(prompts, targets)
+        ]
+        full_texts = [
+            processor.apply_chat_template(m, tokenize=False, add_generation_prompt=False)
+            for m in full_messages
+        ]
+
+        # Pass 1: per-example prompt length (unpadded, includes image tokens)
+        prompt_lens = [
+            _prompt_len(img, ptext) for img, ptext in zip(images, prompt_texts)
+        ]
+
+        # Pass 2: batched, padded, full user+assistant sequence
         inputs = processor(
-            text=chat_prompts,
+            text=full_texts,
             images=images,
             padding=True,
             truncation=True,
-            max_length=cfg["data"]["max_target_tokens"],
+            max_length=max_len,
             return_tensors="pt",
         )
 
-        target_ids = processor.tokenizer(
-            targets,
-            padding=True,
-            truncation=True,
-            max_length=cfg["data"]["max_target_tokens"],
-            return_tensors="pt",
-        ).input_ids
+        labels = inputs["input_ids"].clone()
+        pad_token_id = processor.tokenizer.pad_token_id
+        for i, plen in enumerate(prompt_lens):
+            # Mask the prompt+image-token prefix
+            labels[i, :plen] = -100
+            # Mask right-padding (default HF padding side)
+            labels[i][inputs["attention_mask"][i] == 0] = -100
+        # Belt-and-braces: mask any literal pad tokens that slipped through
+        labels[labels == pad_token_id] = -100
 
-        # Standard causal-LM setup: labels = prompt tokens masked to -100,
-        # target tokens kept as-is. Full masking logic depends on the exact
-        # processor output layout -- Qwen2-VL's processor interleaves image
-        # tokens into input_ids, so in practice you'll want to verify this
-        # against `processor.apply_chat_template` output shape before the
-        # first real training run rather than trusting this sketch blindly.
-        inputs["labels"] = target_ids
+        # Surface truncation now rather than discovering it later as an
+        # unexplained accuracy cliff on large tables -- this is exactly the
+        # token-explosion failure mode being deferred to post-v1, so make it
+        # visible in training logs instead of silent.
+        n_fully_masked = int((labels == -100).all(dim=1).sum())
+        if n_fully_masked:
+            print(
+                f"[collate] WARNING: {n_fully_masked}/{len(batch)} examples in this "
+                f"batch were truncated so severely their labels are entirely masked "
+                f"(zero loss contribution). Likely large tables exceeding "
+                f"max_target_tokens={max_len}. Track this rate -- rising over training "
+                f"is the signal to prioritize the tiling/windowing follow-up."
+            )
+
+        inputs["labels"] = labels
         return inputs
 
     return collate
+
+# NOTE: for very large tables, `full_texts` can exceed max_target_tokens
+# before the assistant's target CSV even starts, leaving that row's labels
+# entirely -100 (contributes zero loss, silently). This is the same
+# underlying issue as the token-explosion/tiling discussion for inference --
+# raising max_target_tokens helps short-term, but a tiling/windowed
+# architecture is the real fix for large sheets. Worth logging a warning
+# here (count of all-masked rows per batch) once you're running real
+# training, to catch it happening silently.
 
 
 def main():
