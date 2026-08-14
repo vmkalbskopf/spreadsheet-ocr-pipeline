@@ -22,10 +22,13 @@ that was missing without Slurm's array-job retry.
 
 from dagster import (
     AssetExecutionContext,
+    ResourceParam,
     RetryPolicy,
     StaticPartitionsDefinition,
     asset,
 )
+
+from resources import DockerRunner
 
 N_SHARDS = 8  # tune to your workstation's CPU core count / RAM
 
@@ -36,14 +39,14 @@ shard_partitions = StaticPartitionsDefinition([str(i) for i in range(N_SHARDS)])
     partitions_def=shard_partitions,
     retry_policy=RetryPolicy(max_retries=2),
 )
-def screenshot_shard(context: AssetExecutionContext, docker_runner) -> None:
+def screenshot_shard(context: AssetExecutionContext, docker_runner: ResourceParam[DockerRunner]) -> None:
     shard_index = int(context.partition_key)
     context.log.info(f"Generating screenshots for shard {shard_index}/{N_SHARDS}")
     docker_runner.run_screenshot_gen(shard_index=shard_index, n_shards=N_SHARDS)
 
 
 @asset(deps=[screenshot_shard])
-def training_manifests(context: AssetExecutionContext, docker_runner) -> None:
+def training_manifests(context: AssetExecutionContext, docker_runner: ResourceParam[DockerRunner]) -> None:
     """Depends on ALL screenshot_shard partitions (Dagster resolves this
     automatically from the partitioned upstream asset -- this asset only
     materializes once every shard has completed)."""
@@ -58,12 +61,12 @@ def training_manifests(context: AssetExecutionContext, docker_runner) -> None:
 
 
 @asset(deps=[training_manifests])
-def trained_model(context: AssetExecutionContext, docker_runner) -> None:
+def trained_model(context: AssetExecutionContext, docker_runner: ResourceParam[DockerRunner]) -> None:
     docker_runner.run_training()  # default entrypoint: train_qlora.py
 
 
 @asset(deps=[trained_model])
-def awq_export(context: AssetExecutionContext, docker_runner) -> None:
+def awq_export(context: AssetExecutionContext, docker_runner: ResourceParam[DockerRunner]) -> None:
     docker_runner.run_training(
         entrypoint_override=[
             "python3", "src/training/export_awq.py",
@@ -75,7 +78,7 @@ def awq_export(context: AssetExecutionContext, docker_runner) -> None:
 
 
 @asset(deps=[trained_model])
-def eval_results(context: AssetExecutionContext, docker_runner) -> None:
+def eval_results(context: AssetExecutionContext, docker_runner: ResourceParam[DockerRunner]) -> None:
     docker_runner.run_training(
         entrypoint_override=[
             "python3", "src/eval/teds_eval.py",
