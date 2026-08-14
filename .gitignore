@@ -1,0 +1,26 @@
+# Dagster local instance state
+orchestration/dagster/.dagster_home/
+orchestration/dagster/.venv/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Data and model artifacts (large, regenerable, shouldn't be in git)
+data/staging/
+data/raw_csv/*
+!data/raw_csv/.gitkeep
+data/screenshots/*
+!data/screenshots/.gitkeep
+data/manifests/*
+!data/manifests/.gitkeep
+checkpoints/
+
+# Logs
+logs/
+*.log
+
+# Macos files
+*.DS_Store
