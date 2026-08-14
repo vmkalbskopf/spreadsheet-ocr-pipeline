@@ -49,10 +49,15 @@ Dagster (`orchestration/dagster/`) replaces the two `.sbatch` scripts:
 
 ```bash
 cd orchestration/dagster
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
 PROJECT_ROOT=/absolute/path/to/spreadsheet-ocr-pipeline \
 DAGSTER_HOME=$(pwd)/.dagster_home dagster dev
 ```
 Then materialize assets from the Dagster UI, or via `dagster asset materialize --select "*"`.
+
+**Why local, not containerized:** `DockerRunner` (`resources.py`) works by shelling out to `docker run` on the host. If Dagster itself ran inside a container, it would need either the host's Docker socket mounted in (`-v /var/run/docker.sock:/var/run/docker.sock`) to launch sibling containers, or a full docker-in-docker setup — both add real complexity (the socket-mount approach in particular gives that container root-equivalent access to the host) for no benefit on a single workstation. Dagster only needs the `dagster` Python package and the `docker` CLI on the host; it never needs LibreOffice, CUDA, or any of the heavier dependencies those live inside the two images.
 
 ## Known limitations / deferred decisions
 
@@ -143,7 +148,7 @@ python src/data_collection/dedup_and_bin.py --config config/data_sources.yaml
 docker build -f docker/Dockerfile.screenshot-gen -t spreadsheet-ocr/screenshot-gen:latest .
 docker build -f docker/Dockerfile.training -t spreadsheet-ocr/training:latest .
 
-# 3. Run everything else via Dagster
+# 3. Run everything else via Dagster (install: orchestration/dagster/requirements.txt)
 cd orchestration/dagster
 PROJECT_ROOT=$(cd ../.. && pwd) DAGSTER_HOME=$(pwd)/.dagster_home dagster dev
 # then materialize assets from the UI, or:
