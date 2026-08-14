@@ -6,8 +6,6 @@ and avoids a docker-in-docker complication if Dagster itself ever runs
 containerized.
 """
 
-from __future__ import annotations
-
 import subprocess
 from pathlib import Path
 

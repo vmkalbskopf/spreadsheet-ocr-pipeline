@@ -20,8 +20,6 @@ requiring you to notice and manually rerun it -- this is the capability
 that was missing without Slurm's array-job retry.
 """
 
-from __future__ import annotations
-
 from dagster import (
     AssetExecutionContext,
     RetryPolicy,

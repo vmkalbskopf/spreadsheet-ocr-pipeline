@@ -51,11 +51,18 @@ Dagster (`orchestration/dagster/`) replaces the two `.sbatch` scripts:
 cd orchestration/dagster
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+mkdir -p .dagster_home
 
 PROJECT_ROOT=/absolute/path/to/spreadsheet-ocr-pipeline \
-DAGSTER_HOME=$(pwd)/.dagster_home dagster dev
+DAGSTER_HOME=$(pwd)/.dagster_home dagster dev -f definitions.py
 ```
-Then materialize assets from the Dagster UI, or via `dagster asset materialize --select "*"`.
+The `-f definitions.py` tells Dagster where the `Definitions` object lives —
+newer Dagster versions no longer infer this automatically and error with
+`No arguments given and no [tool.dagster] block in pyproject.toml found`
+without it. `dagster asset materialize` needs the same flag:
+```bash
+dagster asset materialize -f definitions.py --select "*"
+```
 
 **Why local, not containerized:** `DockerRunner` (`resources.py`) works by shelling out to `docker run` on the host. If Dagster itself ran inside a container, it would need either the host's Docker socket mounted in (`-v /var/run/docker.sock:/var/run/docker.sock`) to launch sibling containers, or a full docker-in-docker setup — both add real complexity (the socket-mount approach in particular gives that container root-equivalent access to the host) for no benefit on a single workstation. Dagster only needs the `dagster` Python package and the `docker` CLI on the host; it never needs LibreOffice, CUDA, or any of the heavier dependencies those live inside the two images.
 
@@ -149,8 +156,8 @@ docker build -f docker/Dockerfile.screenshot-gen -t spreadsheet-ocr/screenshot-g
 docker build -f docker/Dockerfile.training -t spreadsheet-ocr/training:latest .
 
 # 3. Run everything else via Dagster (install: orchestration/dagster/requirements.txt)
-cd orchestration/dagster
-PROJECT_ROOT=$(cd ../.. && pwd) DAGSTER_HOME=$(pwd)/.dagster_home dagster dev
+cd orchestration/dagster && mkdir -p .dagster_home
+PROJECT_ROOT=$(cd ../.. && pwd) DAGSTER_HOME=$(pwd)/.dagster_home dagster dev -f definitions.py
 # then materialize assets from the UI, or:
-dagster asset materialize --select "*"
+dagster asset materialize -f definitions.py --select "*"
 ```

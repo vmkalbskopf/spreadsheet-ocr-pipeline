@@ -3,14 +3,13 @@ Entrypoint for `dagster dev` / `dagster asset materialize`.
 
 Usage:
     cd orchestration/dagster
-    DAGSTER_HOME=$(pwd)/.dagster_home dagster dev
+    mkdir -p .dagster_home
+    DAGSTER_HOME=$(pwd)/.dagster_home dagster dev -f definitions.py
 
 Set PROJECT_ROOT to the absolute path of spreadsheet-ocr-pipeline/ on your
 workstation before running -- the DockerRunner resource uses it to bind-mount
 data/ and checkpoints/ into each container.
 """
-
-from __future__ import annotations
 
 import os
 
