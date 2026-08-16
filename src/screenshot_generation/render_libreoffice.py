@@ -77,8 +77,12 @@ def apply_config(doc, cfg: ScreenshotConfig) -> None:
     # Zoom
     controller.ZoomValue = cfg.zoom_pct
 
-    # Gridlines
-    doc.CurrentController.ActiveSheet.IsGridVisible = cfg.gridlines
+    # Gridlines. NOT a per-sheet property despite how it reads -- ActiveSheet
+    # doesn't expose IsGridVisible (that was wrong; caused a hard failure on
+    # every document). ShowGrid is a property of the CONTROLLER/view instead.
+    # It applies to the whole document view rather than per-sheet, which is
+    # fine here since each loaded CSV only has one sheet anyway.
+    controller.ShowGrid = cfg.gridlines
 
     # Frozen panes
     if cfg.frozen_rows or cfg.frozen_cols:

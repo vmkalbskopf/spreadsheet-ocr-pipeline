@@ -45,7 +45,7 @@ import time
 
 from variation_sampler import ScreenshotConfig
 
-ONLYOFFICE_BINARY = "DesktopEditors"
+ONLYOFFICE_BINARY = "desktopeditors"  # confirmed via official install docs (guides.onlyoffice.com) -- NOT "DesktopEditors", which is the raw binary under /opt/onlyoffice/ and fails if invoked directly outside the wrapper script that sets up its library paths
 # UNVERIFIED -- confirm against your installed version's actual window
 # title (e.g. `xdotool search --name ""` under the same DISPLAY while a
 # document is open, to list all window titles present).
