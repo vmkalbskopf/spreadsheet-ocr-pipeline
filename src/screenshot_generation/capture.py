@@ -50,7 +50,14 @@ class VirtualDisplay:
     def __exit__(self, *exc):
         if self._proc:
             self._proc.terminate()
-            self._proc.wait(timeout=5)
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # terminate() didn't work within 5s -- force it. Without this,
+                # a hung Xvfb process is orphaned and leaks memory across every
+                # resolution group processed by this shard for the rest of the run.
+                self._proc.kill()
+                self._proc.wait(timeout=5)
 
 
 def find_window_id(display: str, name_hint: str = "LibreOffice Calc") -> str:

@@ -1,7 +1,19 @@
-# Screenshot generation image: LibreOffice + Xvfb + capture tooling.
-# CPU-only, no CUDA -- deliberately kept separate from the training image
-# so this stays small and its dependency set (UNO, X11 tooling) never
-# leaks into the GPU training environment.
+# Screenshot generation image: LibreOffice + OnlyOffice Desktop Editors +
+# Xvfb + capture tooling. CPU-only, no CUDA -- deliberately kept separate
+# from the training image so this stays small and its dependency set
+# (UNO, X11 tooling) never leaks into the GPU training environment.
+#
+# OnlyOffice Desktop Editors is used for the "excel" software variant --
+# it's a free, Linux-native app whose UI closely mirrors Excel's ribbon,
+# gridlines, and cell styling, unlike LibreOffice Calc's own visual
+# language. There's no UNO-equivalent scripting API for it, so it's driven
+# via xdotool keyboard/window automation (see
+# src/screenshot_generation/render_onlyoffice.py) rather than a
+# programmatic bridge -- inherently more fragile than the LibreOffice path,
+# and the exact window title / menu shortcuts below were not verified
+# against a running instance in the environment this was written in. Treat
+# them as a documented starting point to confirm against your actual
+# installed version, not a guaranteed-correct spec.
 
 FROM ubuntu:24.04
 
@@ -13,6 +25,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-uno \
     xvfb xdotool wmctrl imagemagick \
     fonts-liberation fonts-crosextra-carlito \
+    wget ca-certificates gnupg \
+    libgtk-3-0 libnss3 libasound2t64 \
+    && rm -rf /var/lib/apt/lists/*
+
+# OnlyOffice Desktop Editors: official .deb, not in Ubuntu's own repos.
+# Pin a specific version if reproducibility matters more than always
+# getting latest -- "latest" here means the build isn't fully reproducible
+# across rebuilds at different times.
+RUN wget -q -O /tmp/onlyoffice-desktopeditors.deb \
+    https://download.onlyoffice.com/install/desktop/editors/linux/onlyoffice-desktopeditors_amd64.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends /tmp/onlyoffice-desktopeditors.deb \
+    && rm -f /tmp/onlyoffice-desktopeditors.deb \
     && rm -rf /var/lib/apt/lists/*
 
 # ImageMagick's default policy blocks PNG/window capture in some distros --

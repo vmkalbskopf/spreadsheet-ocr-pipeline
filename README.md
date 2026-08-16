@@ -81,11 +81,17 @@ dagster asset materialize -f definitions.py --select "*"
   exercise the vision tower during calibration, which is a real quality
   gap for a model whose job is reading images. `llm-compressor` has more
   consistent multimodal calibration support if this proves to matter.
-- **Excel rendering path is unimplemented** -- screenshots currently fall
-  back to LibreOffice Calc even when Excel is sampled in
-  `screenshot_variation.yaml`. Needs Windows/COM automation (`xlwings`)
-  or a VM, which is a meaningfully different automation stack from the
-  Linux/UNO path already built.
+- **Excel rendering uses OnlyOffice Desktop Editors, not real Excel** --
+  driven via `xdotool` keyboard automation (`src/screenshot_generation/render_onlyoffice.py`)
+  since there's no UNO-equivalent scripting API for it. **Written without
+  access to a running OnlyOffice instance to verify against** — window
+  title matching, keyboard shortcuts (zoom, gridline toggle), and timing
+  are documented best-guesses. Expect to spend time confirming/adjusting
+  `WINDOW_TITLE_HINT` and the shortcut sequences in that file against your
+  actual installed version before trusting the output. Config coverage is
+  also intentionally partial vs. the LibreOffice path — see that module's
+  docstring for exactly what's applied vs. silently ignored for this
+  software variant.
 - **GitHub scraping requires `GITHUB_TOKEN`**; Kaggle scraping requires
   `~/.kaggle/kaggle.json` or `KAGGLE_USERNAME`/`KAGGLE_KEY`. Neither
   scraper has been run against live APIs in this environment (network
@@ -113,8 +119,9 @@ src/
   screenshot_generation/
     variation_sampler.py    # samples one random UI configuration per screenshot
     render_libreoffice.py   # UNO automation: load CSV, apply config, save state
+    render_onlyoffice.py    # xdotool automation for the "excel" variant (no scripting API exists) -- UNVERIFIED, see module docstring
     capture.py              # Xvfb + window capture -> PNG
-    generate_dataset.py     # orchestrates sampler + render + capture per CSV
+    generate_dataset.py     # orchestrates sampler + render (routes by software) + capture per CSV
 
   training/
     prepare_dataset.py      # builds HF Dataset of (image, target_csv_text) pairs

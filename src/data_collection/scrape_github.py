@@ -29,6 +29,17 @@ GITHUB_API = "https://api.github.com"
 REQUEST_TIMEOUT_S = 30
 REQUEST_DELAY_S = 2.0  # GitHub code search is rate-limited to 10 req/min even authenticated
 
+# GitHub's code search API hard-caps at 1,000 results per query (10 pages of
+# 100) -- page 11 returns HTTP 422, not more results. This isn't a crash (the
+# existing except block below catches it and moves to the next query term),
+# but it DOES silently cap you at ~1,000 files per term even if max_files is
+# set higher. Stop cleanly at the documented limit instead of hitting the
+# API's error response, and log it plainly so a low file count isn't mistaken
+# for a bug -- add more, more specific query_terms in config/data_sources.yaml
+# (e.g. combining extension:csv with size:, language:, or path: qualifiers)
+# if you need more than ~1,000 files from this source.
+MAX_PAGES_PER_QUERY = 10
+
 _repo_license_cache: dict[str, str | None] = {}
 
 
@@ -81,7 +92,7 @@ def scrape_github(cfg: dict) -> None:
         print(f"Searching GitHub code for: '{query}'")
 
         page = 1
-        while seen < max_files:
+        while seen < max_files and page <= MAX_PAGES_PER_QUERY:
             time.sleep(REQUEST_DELAY_S)
             try:
                 resp = requests.get(
@@ -134,6 +145,13 @@ def scrape_github(cfg: dict) -> None:
                 print(f"  [{seen}/{max_files}] {repo_full_name}/{item['path']} (license={license_id})")
 
             page += 1
+
+        if page > MAX_PAGES_PER_QUERY:
+            print(
+                f"  reached GitHub's 1,000-result cap for query '{query}' "
+                f"({seen} total files collected so far across all terms) -- "
+                f"add more/narrower query_terms in config if you need more from this source"
+            )
 
 
 def _download_file(url: str, dest_path: Path) -> bool:

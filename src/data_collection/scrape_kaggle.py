@@ -14,10 +14,32 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import zipfile
 from pathlib import Path
 
 from common import append_manifest, license_allowed, load_yaml_config, safe_filename
+
+
+def _safe_extractall(zf: zipfile.ZipFile, dest_dir: Path) -> None:
+    """extractall() trusts member paths verbatim -- a malicious entry like
+    '../../etc/passwd' or an absolute path can write outside dest_dir
+    ("Zip Slip"). Kaggle's own uploads are unlikely to be hostile, but an
+    automated scraper pulling from public search shouldn't assume that.
+    Resolve each member's destination and refuse anything that escapes
+    dest_dir, rather than trusting the archive's internal paths."""
+    dest_root = dest_dir.resolve()
+    for member in zf.infolist():
+        member_path = (dest_dir / member.filename).resolve()
+        if os.path.commonpath([dest_root, member_path]) != str(dest_root):
+            print(f"    skipping unsafe zip member (path traversal): {member.filename}")
+            continue
+        if member.is_dir():
+            member_path.mkdir(parents=True, exist_ok=True)
+            continue
+        member_path.parent.mkdir(parents=True, exist_ok=True)
+        with zf.open(member) as src, open(member_path, "wb") as dst:
+            dst.write(src.read())
 
 
 def scrape_kaggle(cfg: dict) -> None:
@@ -87,7 +109,7 @@ def _extract_and_register(
     for zf_path in zip_files:
         try:
             with zipfile.ZipFile(zf_path) as zf:
-                zf.extractall(dest_dir)
+                _safe_extractall(zf, dest_dir)
         except zipfile.BadZipFile:
             print(f"    bad zip, skipping: {zf_path}")
             continue

@@ -49,13 +49,23 @@ def connect_to_soffice(host: str = "localhost", port: int = 2002):
 def load_csv(desktop, csv_path: str):
     """Opens a CSV with import filter options forcing comma delimiter and
     UTF-8, so headers with non-ASCII characters (e.g. Norwegian æøå in
-    data.norge.no sources) render correctly."""
+    data.norge.no sources) render correctly.
+
+    FilterName is REQUIRED here, not optional -- without it, LibreOffice
+    falls back to its own format auto-detection, and because this pipeline
+    runs without --headless (an actual window is needed for screenshotting),
+    ambiguous auto-detection can pop the interactive "Text Import" dialog
+    instead of applying FilterOptions silently. That dialog blocks forever
+    waiting for a click that will never come -- a process hang with near-zero
+    CPU usage, easy to mistake for something else stuck. Explicit FilterName
+    bypasses auto-detection entirely, so this can't happen."""
     url = f"file://{csv_path}"
+    filter_name = _make_prop("FilterName", "Text - txt - csv (StarCalc)")
     filter_options = _make_prop(
         "FilterOptions", "44,34,76,1,,0,true,true,true"  # comma-sep, UTF-8, detect quotes
     )
     hidden = _make_prop("Hidden", False)  # must be visible for screenshotting
-    doc = desktop.loadComponentFromURL(url, "_blank", 0, (filter_options, hidden))
+    doc = desktop.loadComponentFromURL(url, "_blank", 0, (filter_name, filter_options, hidden))
     return doc
 
 
