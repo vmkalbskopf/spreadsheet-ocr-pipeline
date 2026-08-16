@@ -27,12 +27,23 @@ sources:
     enabled: true
     data_gov:
       enabled: true
-      endpoint: "https://catalog.data.gov/api/3/action/package_search"
+      # data.gov migrated its API off the old open catalog.data.gov/api/3
+      # endpoint (that one now 404s) to a registration-gated endpoint under
+      # api.gsa.gov. Register a free key at https://api.data.gov/signup/ and
+      # set DATA_GOV_API_KEY in your environment -- DEMO_KEY works for a
+      # quick smoke test but is shared/rate-limited across everyone using it,
+      # not suitable for a real scrape run.
+      endpoint: "https://api.gsa.gov/technology/datagov/v3/action/package_search"
       query_terms: ["csv", "dataset", "survey", "inventory"]
       max_datasets: 2000
     data_norge:
       enabled: true
-      endpoint: "https://data.norge.no/api/dcat/datasets"   # useful for NO/Nordic headers
+      # Old GET /api/dcat/datasets endpoint was retired; data.norge.no now
+      # exposes a POST-based Elasticsearch API. No auth needed, but rate
+      # limited to 10 req/min (burst 20) -- see REQUEST_DELAY_S_DATA_NORGE
+      # in scrape_gov_data.py, which is tuned to that limit specifically.
+      endpoint: "https://search.api.fellesdatakatalog.digdir.no/search/datasets"
+      query_terms: ["csv"]  # useful for NO/Nordic headers
       max_datasets: 1500
     eurostat:
       enabled: true
@@ -62,6 +73,30 @@ shape_bins:
     max: 150
     n_bins: 6
   target_per_bin: 150   # aim for ~even coverage; oversample-heavy bins get capped
+
+# Applied at dedup_and_bin.py's finalize() step, AFTER shape-bin sampling
+# above but BEFORE writing to data/raw_csv/. This is a correctness fix, not
+# just a size optimization: screenshot rendering never actually scrolls to
+# reveal rows/columns beyond the initial viewport (see
+# render_libreoffice.py's apply_config docstring), so training on the full
+# original file as the target text means the model is taught to output
+# content for rows/columns it was never shown a single pixel of on any
+# source CSV bigger than this cap. Truncating both the rendered document
+# and the training target to the same fixed size guarantees they match.
+#
+# Interaction worth knowing: shape_bins.rows.max above still governs which
+# SOURCE files get sampled into the dataset (for diversity of file
+# characteristics pre-truncation), but every accepted file gets rendered
+# and trained on as if it were at most this size -- so most of the value
+# of sampling deep into the upper end of shape_bins.rows now comes from
+# which rows/cols happen to survive truncation (always the first N), not
+# from actual visual "this is a huge sheet" diversity. If that bothers you,
+# lowering shape_bins.rows.max/cols.max to roughly match these values
+# would make the earlier sampling stage's intent line up with what
+# actually reaches training.
+render_cap:
+  max_rows: 150   # includes header row
+  max_cols: 40
 
 dedup:
   method: "content_hash"   # sha256 over normalized (sorted columns, stripped whitespace) content

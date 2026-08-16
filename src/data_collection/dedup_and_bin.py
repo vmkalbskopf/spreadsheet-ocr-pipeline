@@ -63,6 +63,39 @@ def _file_content_hash(path: Path) -> str:
         return hashlib.sha256(f.read()).hexdigest()
 
 
+def _write_truncated_csv(
+    src: Path, dest: Path, max_rows: int | None, max_cols: int | None
+) -> tuple[int, int, bool]:
+    """Writes src to dest, truncated to at most max_rows lines (header
+    included) and max_cols columns. Returns (n_rows_written, n_cols_written,
+    was_truncated) so the caller can update manifest shape metadata and
+    track how much of the dataset this actually affects.
+
+    Truncating rows is straightforward (just stop reading after max_rows
+    lines). Truncating columns means every row -- including the header --
+    gets sliced to the first max_cols fields, which keeps header/data
+    alignment intact."""
+    with open(src, encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        rows = []
+        was_truncated = False
+        for i, row in enumerate(reader):
+            if max_rows is not None and i >= max_rows:
+                was_truncated = True
+                break
+            if max_cols is not None and len(row) > max_cols:
+                row = row[:max_cols]
+                was_truncated = True
+            rows.append(row)
+
+    with open(dest, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerows(rows)
+
+    n_cols_written = max((len(r) for r in rows), default=0)
+    return len(rows), n_cols_written, was_truncated
+
+
 def dedup(records: list[dict], near_dup_threshold: float) -> tuple[list[dict], dict]:
     """Two-stage dedup: exact content hash first (cheap, catches byte-identical
     re-uploads), then near-dup signature comparison within remaining records
@@ -153,7 +186,12 @@ def finalize(cfg: dict, accepted: list[dict]) -> None:
     raw_csv_dir = Path(cfg["output"]["raw_csv_dir"])
     raw_csv_dir.mkdir(parents=True, exist_ok=True)
 
+    render_cap = cfg.get("render_cap", {})
+    max_rows = render_cap.get("max_rows")
+    max_cols = render_cap.get("max_cols")
+
     final_records = []
+    n_truncated = 0
     for r in accepted:
         src = Path(r["normalized_path"])
         # Content-hash-prefixed filename: guarantees uniqueness across
@@ -164,8 +202,14 @@ def finalize(cfg: dict, accepted: list[dict]) -> None:
         file_hash = _file_content_hash(src)[:12]
         dest_name = f"{file_hash}_{src.name}"
         dest = raw_csv_dir / dest_name
+
+        n_rows, n_cols = r["n_rows"], r["n_cols"]
         if not dest.exists():
-            shutil.copy2(src, dest)
+            if max_rows or max_cols:
+                n_rows, n_cols, was_truncated = _write_truncated_csv(src, dest, max_rows, max_cols)
+                n_truncated += was_truncated
+            else:
+                shutil.copy2(src, dest)
 
         final_records.append(
             {
@@ -174,13 +218,23 @@ def finalize(cfg: dict, accepted: list[dict]) -> None:
                 "source_id": r["source_id"],
                 "license": r.get("license"),
                 "url": r.get("url"),
-                "n_rows": r["n_rows"],
-                "n_cols": r["n_cols"],
+                # Reflects the TRUNCATED shape actually written to dest, not
+                # the original source file's shape -- this is what
+                # screenshot rendering and prepare_dataset.py's training
+                # target both see, so it's what downstream code should
+                # reason about (e.g. shape-bin analysis of the final set).
+                "n_rows": n_rows,
+                "n_cols": n_cols,
             }
         )
 
     write_manifest(cfg["output"]["final_manifest_path"], final_records)
     print(f"Wrote {len(final_records)} accepted CSVs to {raw_csv_dir}")
+    if max_rows or max_cols:
+        print(
+            f"Applied render_cap (max_rows={max_rows}, max_cols={max_cols}): "
+            f"{n_truncated}/{len(final_records)} files were larger than the cap and got truncated"
+        )
 
 
 def main():

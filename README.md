@@ -69,14 +69,33 @@ dagster asset materialize -f definitions.py --select "*"
 ## Known limitations / deferred decisions
 
 - **Large-table token explosion**: end-to-end auto-regressive CSV generation
-  means a ~100x15 table is 3,000-6,000+ tokens, which is slow to generate
-  on a laptop GPU and prone to cascading errors from a single dropped
-  delimiter. Deferred intentionally: `src/eval/teds_eval.py` now reports
-  accuracy broken down by row-count bucket, and `train_qlora.py` logs a
-  warning when truncation fully masks an example's labels. Use those
-  signals to decide whether a windowed-tiling or 2-stage
+  means a ~150x40 table can still run 5,000+ tokens for text-heavy cells,
+  which is slow to generate on a laptop GPU and prone to cascading errors
+  from a single dropped delimiter. Deferred intentionally: `src/eval/teds_eval.py`
+  reports accuracy broken down by row-count bucket, and `train_qlora.py`
+  logs a warning when truncation fully masks an example's labels. Use
+  those signals to decide whether a windowed-tiling or 2-stage
   detector-then-VLM architecture is actually justified, rather than
   building it preemptively.
+- **Render/target size cap** (`config/data_sources.yaml`'s `render_cap`,
+  applied in `dedup_and_bin.py`): every accepted CSV is truncated to at
+  most 150 rows x 40 columns before it ever reaches rendering or training.
+  This isn't just a size limit -- it fixes a real correctness bug: screenshot
+  rendering never actually scrolls to reveal rows/columns beyond the
+  initial viewport (see `render_libreoffice.py`'s `apply_config` docstring),
+  so without this cap, training on the full original file as the target
+  text meant the model was being taught to output content for rows/columns
+  it was never shown a single pixel of, for any source CSV bigger than
+  what fits on screen -- actively teaching hallucination rather than
+  extraction. Tested end-to-end against synthetic fixtures (500x60 source
+  correctly truncated to 150x40; manifest shape metadata updated to match
+  the truncated file, not the original). One consequence worth knowing:
+  `shape_bins.rows.max`/`cols.max` (3000/150) still govern which *source*
+  files get sampled for diversity, but everything gets rendered at or
+  below the render_cap regardless of original size -- so sampling deep
+  into the upper end of those ranges mostly just changes which rows/cols
+  happen to survive truncation, not actual "huge sheet" visual variety in
+  what reaches training.
 - **AWQ calibration is text-only** (`src/training/export_awq.py`): doesn't
   exercise the vision tower during calibration, which is a real quality
   gap for a model whose job is reading images. `llm-compressor` has more
@@ -93,11 +112,21 @@ dagster asset materialize -f definitions.py --select "*"
   docstring for exactly what's applied vs. silently ignored for this
   software variant.
 - **GitHub scraping requires `GITHUB_TOKEN`**; Kaggle scraping requires
-  `~/.kaggle/kaggle.json` or `KAGGLE_USERNAME`/`KAGGLE_KEY`. Neither
-  scraper has been run against live APIs in this environment (network
-  access here is restricted to package registries) -- the normalize and
-  dedup/binning stages *have* been tested end-to-end against synthetic
-  staged files, including exact-dup, near-dup, and license-gate cases.
+  `~/.kaggle/kaggle.json` or `KAGGLE_USERNAME`/`KAGGLE_KEY`; **data.gov
+  scraping requires `DATA_GOV_API_KEY`** (register free at
+  https://api.data.gov/signup/ -- falls back to the shared, rate-limited
+  `DEMO_KEY` if unset). data.norge.no needs no auth but is capped at 10
+  req/min. Both government endpoints were corrected mid-project after
+  their original URLs (`catalog.data.gov/api/3/...` and
+  `data.norge.no/api/dcat/datasets`) turned out to have been retired/moved
+  since this was first written -- verified against current official docs,
+  but response-shape parsing for data.norge.no's new search API is still
+  best-effort (see `_scrape_data_norge`'s docstring). None of the scrapers
+  have been run against live APIs in this environment (network access here
+  is restricted to package registries) -- the normalize and dedup/binning
+  stages *have* been tested end-to-end against synthetic staged files,
+  including exact-dup, near-dup, license-gate, and render-cap truncation
+  cases.
 
 ## Directory layout
 
@@ -111,10 +140,10 @@ src/
   data_collection/
     common.py                # shared: manifests, hashing, license gate, near-dup signatures
     scrape_kaggle.py         # Kaggle API, license-filtered at search time
-    scrape_gov_data.py       # data.gov (CKAN) + data.norge.no (DCAT) + Eurostat (SDMX)
+    scrape_gov_data.py       # data.gov (CKAN via api.gsa.gov) + data.norge.no (search API) + Eurostat (SDMX)
     scrape_github.py         # GitHub code search for standalone .csv files
     normalize_to_csv.py      # xlsx/xls/ods/tsv/json -> canonical CSV, computes row/col counts
-    dedup_and_bin.py         # license gate + exact/near dedup + shape-bin balancing -> data/raw_csv/
+    dedup_and_bin.py         # license gate + exact/near dedup + shape-bin balancing + render_cap truncation -> data/raw_csv/
 
   screenshot_generation/
     variation_sampler.py    # samples one random UI configuration per screenshot
@@ -151,18 +180,20 @@ orchestration/dagster/
 
 ```bash
 # 1. Data collection (writes to data/staging/, then data/raw_csv/)
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r src/data_collection/requirements.txt
+
 python src/data_collection/scrape_kaggle.py --config config/data_sources.yaml
-python src/data_collection/scrape_gov_data.py --config config/data_sources.yaml
+DATA_GOV_API_KEY=xxx python src/data_collection/scrape_gov_data.py --config config/data_sources.yaml
 GITHUB_TOKEN=ghp_xxx python src/data_collection/scrape_github.py --config config/data_sources.yaml
 python src/data_collection/normalize_to_csv.py --config config/data_sources.yaml
 python src/data_collection/dedup_and_bin.py --config config/data_sources.yaml
-# install: pip install -r src/data_collection/requirements.txt
 
 # 2. Build containers
 docker build -f docker/Dockerfile.screenshot-gen -t spreadsheet-ocr/screenshot-gen:latest .
 docker build -f docker/Dockerfile.training -t spreadsheet-ocr/training:latest .
 
-# 3. Run everything else via Dagster (install: orchestration/dagster/requirements.txt)
+# 3. Run everything else via Dagster (venv + install as shown above under "Orchestration")
 cd orchestration/dagster && mkdir -p .dagster_home
 PROJECT_ROOT=$(cd ../.. && pwd) DAGSTER_HOME=$(pwd)/.dagster_home dagster dev -f definitions.py
 # then materialize assets from the UI, or:
