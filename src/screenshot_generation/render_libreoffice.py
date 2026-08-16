@@ -88,12 +88,24 @@ def apply_config(doc, cfg: ScreenshotConfig) -> None:
     if cfg.frozen_rows or cfg.frozen_cols:
         controller.freezeAtPosition(cfg.frozen_cols, cfg.frozen_rows)
 
-    # Column width
     used = sheet.createCursor()
     used.gotoEndOfUsedArea(False)
     n_cols = used.RangeAddress.EndColumn + 1
     n_rows = used.RangeAddress.EndRow + 1
 
+    # Font -- MUST be applied BEFORE column width below. OptimalWidth
+    # measures content width using whatever font is active at the moment
+    # it's set; setting font afterward (as this used to do) leaves
+    # "auto_fit" columns sized for LibreOffice's stock default font, not
+    # the actually-rendered cfg.font_family/font_size_pt. If the sampled
+    # font ends up larger, the stale "optimal" width is now too narrow and
+    # content gets visibly clipped -- this was happening even in auto_fit
+    # mode, not just the intentionally-narrow manual_narrow mode.
+    data_range = sheet.getCellRangeByPosition(0, 0, n_cols - 1, n_rows - 1)
+    data_range.CharFontName = cfg.font_family
+    data_range.CharHeight = cfg.font_size_pt
+
+    # Column width
     columns = sheet.Columns
     if cfg.column_width_mode == "auto_fit":
         for c in range(n_cols):
@@ -110,11 +122,6 @@ def apply_config(doc, cfg: ScreenshotConfig) -> None:
     if cfg.row_height_mode == "manual":
         for r in range(min(n_rows, 500)):  # cap to avoid pathological render time
             rows.getByIndex(r).Height = 600
-
-    # Font
-    data_range = sheet.getCellRangeByPosition(0, 0, n_cols - 1, n_rows - 1)
-    data_range.CharFontName = cfg.font_family
-    data_range.CharHeight = cfg.font_size_pt
 
     # Cell selection / highlight
     if cfg.cell_highlight and n_rows > 0 and n_cols > 0:

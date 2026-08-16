@@ -18,6 +18,15 @@
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Without this, Python fully block-buffers stdout when it's connected to a
+# pipe rather than a terminal -- which `docker run` without -t always is.
+# Progress prints from generate_dataset.py would then sit invisible in an
+# in-memory buffer until it fills or the process exits, making a genuinely
+# hung container look like it's producing zero output even though it's
+# actually just buffered and unflushed. This makes stdout/stderr unbuffered
+# so `docker logs -f` (and Dagster's log capture, which reads the same
+# stream) shows output as it's actually printed.
+ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-calc \
