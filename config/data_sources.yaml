@@ -24,7 +24,7 @@ sources:
     query_terms: ["csv", "spreadsheet", "survey", "inventory", "records"]
 
   gov_data:
-    enabled: true
+    enabled: false
     data_gov:
       enabled: true
       # data.gov migrated its API off the old open catalog.data.gov/api/3
