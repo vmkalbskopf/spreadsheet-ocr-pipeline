@@ -48,6 +48,25 @@ def scrape_gov_data(cfg: dict) -> None:
 
 
 def _download_resource(url: str, dest_path: Path) -> bool:
+    # Skip download if the file already exists and is not empty
+    if dest_path.exists() and dest_path.stat().st_size > 0:
+        print(f"    Skipping download, file already exists: {dest_path.name}")
+        return True
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        resp = requests.get(url, timeout=REQUEST_TIMEOUT_S, stream=True)
+        resp.raise_for_status()
+        with open(dest_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1 << 16):
+                f.write(chunk)
+        return True
+    except (requests.RequestException, OSError) as e:  # noqa: BLE001
+        print(f"    FAILED download {url}: {e}")
+        if dest_path.exists():
+            dest_path.unlink()  # Remove partial file on failure
+        return False
+    
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         resp = requests.get(url, timeout=REQUEST_TIMEOUT_S, stream=True)
