@@ -24,9 +24,9 @@ sources:
     query_terms: ["csv", "spreadsheet", "survey", "inventory", "records"]
 
   gov_data:
-    enabled: false
+    enabled: true
     data_gov:
-      enabled: true
+      enabled: false
       # data.gov migrated its API off the old open catalog.data.gov/api/3
       # endpoint (that one now 404s) to a registration-gated endpoint under
       # api.gsa.gov. Register a free key at https://api.data.gov/signup/ and
