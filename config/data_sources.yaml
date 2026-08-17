@@ -36,6 +36,7 @@ sources:
       endpoint: "https://api.gsa.gov/technology/datagov/v3/action/package_search"
       query_terms: ["csv", "dataset", "survey", "inventory"]
       max_datasets: 2000
+
     data_norge:
       enabled: true
       # Old GET /api/dcat/datasets endpoint was retired; data.norge.no now
@@ -52,6 +53,22 @@ sources:
       # by known dataset code. Fill in codes of interest here; the table
       # listing at https://ec.europa.eu/eurostat/databrowser/ has the codes.
       dataset_codes: ["tps00001", "nama_10_gdp", "demo_pjan"]
+    socrata:
+      enabled: true
+      endpoint: "https://api.us.socrata.com/api/catalog/v1"
+      max_datasets: 1000
+      query_terms: ["csv", "demographics", "survey", "health", "metrics"]
+      
+    owid:
+      enabled: true
+      # OWID uses direct GitHub links for their master datasets
+      datasets:
+        - name: "co2_data"
+          url: "https://raw.githubusercontent.com/owid/co2-data/master/owid-co2-data.csv"
+        - name: "energy_data"
+          url: "https://raw.githubusercontent.com/owid/energy-data/master/owid-energy-data.csv"
+        - name: "covid_19_data"
+          url: "https://raw.githubusercontent.com/owid/covid-19-data/master/public/data/owid-covid-data.csv"
 
   github_csv_search:
     enabled: true
