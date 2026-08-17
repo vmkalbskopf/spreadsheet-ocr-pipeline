@@ -37,6 +37,18 @@ REQUEST_TIMEOUT_S = 30
 REQUEST_DELAY_S = 0.5  # be a polite scraper; data.gov, Eurostat, Socrata, OWID aren't rate-limit-documented
 REQUEST_DELAY_S_DATA_NORGE = 6.5  # 10 req/min documented limit -> >=6s between requests, with margin
 
+# Some open-data portals (Socrata, data.gov edge, GitHub) throttle or block
+# on the default "python-requests" user agent. This applies to every
+# download request, whichever source issued it.
+DOWNLOAD_HEADERS = {
+    "User-Agent": "open-data-gov-scraper (public-data pipeline; polite requests)",
+}
+
+# If a whole page of search results yields zero downloadable tabular data,
+# stop after this many consecutive empty pages so the loop cannot crawl an
+# entire (huge) result set forever just because nothing was downloadable.
+MAX_EMPTY_PAGES_PER_TERM = 10
+
 
 def scrape_gov_data(cfg: dict) -> None:
     src_cfg = cfg["sources"]["gov_data"]
@@ -74,11 +86,27 @@ def _download_resource(url: str, dest_path: Path) -> bool:
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        resp = requests.get(url, timeout=REQUEST_TIMEOUT_S, stream=True)
+        resp = requests.get(url, timeout=REQUEST_TIMEOUT_S, stream=True, headers=DOWNLOAD_HEADERS)
         resp.raise_for_status()
+
+        # 1. Guard against HTML landing pages served with HTTP 200
+        content_type = resp.headers.get("content-type", "").lower()
+        if "text/html" in content_type or "application/xhtml+xml" in content_type:
+            print(f"    SKIPPED {url}: Received HTML webpage instead of tabular data (Content-Type: {content_type})")
+            return False
+
         with open(dest_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=1 << 16):
                 f.write(chunk)
+
+        # 2. Safeguard against servers returning HTML disguised as application/octet-stream
+        with open(dest_path, "rb") as f:
+            header_bytes = f.read(200).lower()
+            if b"<html" in header_bytes or b"<!doctype html" in header_bytes:
+                print(f"    SKIPPED {url}: Downloaded file content is an HTML document.")
+                dest_path.unlink()  # Clean up the bad file
+                return False
+
         return True
     except (requests.RequestException, OSError) as e:  # noqa: BLE001
         print(f"    FAILED download {url}: {e}")
@@ -109,6 +137,7 @@ def _scrape_data_gov(sub_cfg: dict, staging_dir: Path, manifest_path: str) -> No
         print(f"Searching data.gov for: '{term}'")
         start = 0
         rows = 100
+        empty_pages = 0
         while seen < max_datasets:
             try:
                 resp = requests.get(
@@ -125,6 +154,8 @@ def _scrape_data_gov(sub_cfg: dict, staging_dir: Path, manifest_path: str) -> No
             results = resp.json().get("result", {}).get("results") or []
             if not results:
                 break
+
+            page_this_downloadable = False
 
             for pkg in results:
                 if seen >= max_datasets:
@@ -152,11 +183,7 @@ def _scrape_data_gov(sub_cfg: dict, staging_dir: Path, manifest_path: str) -> No
                         continue
 
                     # Standardize extension for the output file
-                    ext = ".csv" if any(k in fmt for k in ("csv", "comma")) or url_lower.endswith(".csv") else \
-                          ".json" if "json" in fmt or url_lower.endswith(".json") else \
-                          ".xlsx" if "xlsx" in fmt or url_lower.endswith(".xlsx") else \
-                          ".tsv" if "tsv" in fmt or url_lower.endswith(".tsv") else \
-                          ".xls" if "xls" in fmt or url_lower.endswith(".xls") else ".csv"
+                    ext = ".csv" if any(k in fmt for k in ("csv", "comma")) or url_lower.endswith(".csv") else                           ".json" if "json" in fmt or url_lower.endswith(".json") else                           ".xlsx" if "xlsx" in fmt or url_lower.endswith(".xlsx") else                           ".tsv" if "tsv" in fmt or url_lower.endswith(".tsv") else                           ".xls" if "xls" in fmt or url_lower.endswith(".xls") else ".csv"
 
                     fname = safe_filename(f"{pkg_name}_{resource.get('id', '')}") + ext
                     dest = staging_dir / safe_filename(pkg_name) / fname
@@ -179,129 +206,176 @@ def _scrape_data_gov(sub_cfg: dict, staging_dir: Path, manifest_path: str) -> No
 
                 if downloaded_any:
                     seen += 1
+                    page_this_downloadable = True
                     print(f"  [{seen}/{max_datasets}] {pkg_name}")
+
+            # If a whole page produced nothing downloadable, stop iterating
+            # once too many come back empty rather than crawling indefinitely.
+            if not page_this_downloadable:
+                empty_pages += 1
+                if empty_pages >= MAX_EMPTY_PAGES_PER_TERM:
+                    print(f"  stopping: {empty_pages} consecutive pages with no downloadable data for '{term}'")
+                    break
+            else:
+                empty_pages = 0
 
             start += rows
 
 
 # --- data.norge.no (search.api.fellesdatakatalog.digdir.no) -------------
+#
+# Uses the current POST-based Elasticsearch search API
+# (https://data.norge.no/technical/api/search), which replaced the old
+# GET /api/dcat/datasets endpoint. No auth required.
+#
+# Response-shape caveat: the documented request format is confirmed against
+# the official docs (query + pagination in a JSON body), but the exact
+# response JSON schema for individual hits was NOT independently verified
+# against a live response. Confirm against an actual response and adjust
+# field names (e.g. `id` vs `_id`/`_source`) if dataset information isn't
+# coming through.
 
 def _scrape_data_norge(sub_cfg: dict, staging_dir: Path, manifest_path: str) -> None:
-    """Uses the current POST-based Elasticsearch search API
-    (https://data.norge.no/en/technical/api/search), which replaced the old
-    GET /api/dcat/datasets endpoint. No auth required.
-
-    Response-shape caveat: the documented request format is confirmed
-    against the official docs (query + pagination in a JSON body), but the
-    exact response JSON schema for individual hits was NOT independently
-    verified against a live response. The parsing below defends against a
-    couple of plausible field-name variants (mirroring the old DCAT-AP-NO
-    field names, since the search index is built from that same underlying
-    data) -- confirm against an actual response and adjust field names if
-    dataset/distribution info doesn't come through."""
-    endpoint = sub_cfg["endpoint"]  # expected: .../search/datasets
+    endpoint = sub_cfg["endpoint"]
     max_datasets = sub_cfg["max_datasets"]
-    query_terms = sub_cfg.get("query_terms") or [""]  # empty string = match-all-ish
+    query_terms = sub_cfg.get("query_terms") or [""]
     seen = 0
 
-    for ds_summary in hits:
+    for term in query_terms:
         if seen >= max_datasets:
             break
-            
-        if not isinstance(ds_summary, dict):
-            continue
+        print(f"Searching data.norge.no for: '{term}'")
+        page = 0
+        page_size = 100
 
-        dataset_id = ds_summary.get("id")
-        if not dataset_id:
-            continue
-            
-        ds_title = _first_text(ds_summary.get("title")) or dataset_id
-        
-        # --- THE TWO-STEP FETCH ---
-        # Fellesdatakatalog Resource API endpoint for full DCAT records
-        resource_url = f"https://resource.api.fellesdatakatalog.digdir.no/v1/datasets/{dataset_id}"
-        
-        time.sleep(REQUEST_DELAY_S_DATA_NORGE)  # Respect rate limit for the secondary GET request
-        try:
-            detail_resp = requests.get(
-                resource_url,
-                headers={"Accept": "application/json"},
-                timeout=REQUEST_TIMEOUT_S,
-            )
-            detail_resp.raise_for_status()
-        except requests.RequestException as e:  # noqa: BLE001
-            print(f"  Failed to fetch detailed record for {dataset_id}: {e}")
-            continue
-            
-        full_ds = detail_resp.json()
-        
-        # Extract metadata from the COMPLETE record, not the summary
-        access_rights = full_ds.get("accessRights", {})
-        license_info = access_rights.get("code") or access_rights.get("uri")
+        while seen < max_datasets:
+            time.sleep(REQUEST_DELAY_S_DATA_NORGE)
 
-        # The full record will contain the actual distributions array
-        distributions = full_ds.get("distribution") or []
-        if isinstance(distributions, dict):
-            distributions = [distributions]
+            payload = {"pagination": {"size": page_size, "page": page}}
+            if term:
+                payload["query"] = term
 
-        downloaded_any = False
-        for dist in distributions:
-            if not isinstance(dist, dict):
-                continue
+            try:
+                resp = requests.post(
+                    endpoint,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=REQUEST_TIMEOUT_S,
+                )
+                resp.raise_for_status()
+            except requests.RequestException as e:  # noqa: BLE001
+                print(f"  search failed: {e}")
+                break
 
-            fmt = (_first_text(dist.get("format")) or "").lower()
-            media_type = (_first_text(dist.get("mediaType")) or "").lower()
+            body = resp.json()
 
-            url = dist.get("accessURL") or dist.get("downloadURL")
-            if not url:
-                continue
+            # Explicitly define hits from the search response body
+            hits = body.get("hits") if isinstance(body, dict) else []
+            if not hits or not isinstance(hits, list):
+                break
 
-            url = _first_text(url) if isinstance(url, (list, dict)) else url
-            url_str = str(url)
-            url_lower = url_str.lower()
+            for ds_summary in hits:
+                if seen >= max_datasets:
+                    break
 
-            # Check FDK's normalized format list if available on the distribution
-            fdk_formats = dist.get("fdkFormat") or []
-            if isinstance(fdk_formats, list):
-                for f_obj in fdk_formats:
-                    if isinstance(f_obj, dict):
-                        fmt += f" {str(f_obj.get('code', ''))} {str(f_obj.get('type', ''))}".lower()
+                if not isinstance(ds_summary, dict):
+                    continue
 
-            is_tabular = (
-                any(k in fmt for k in ("csv", "comma", "tsv", "xls", "json")) or
-                any(k in media_type for k in ("csv", "comma", "tsv", "xls", "json")) or
-                any(url_lower.endswith(ext) for ext in (".csv", ".tsv", ".xlsx", ".xls", ".json"))
-            )
+                # The search API may expose the id directly or as an ES doc
+                # (`_id` + `_source`). Prefer a direct `id` if present.
+                dataset_id = ds_summary.get("id") or ds_summary.get("_id")
+                if not dataset_id:
+                    continue
 
-            if not is_tabular:
-                continue
+                ds_title = _first_text(ds_summary.get("title")) or dataset_id
 
-            parsed_path = urlparse(url_str).path
-            suffix = Path(parsed_path).suffix or ".csv"
+                # Two-step fetch: query the Resource API for the full DCAT record containing distributions
+                resource_url = f"https://resource.api.fellesdatakatalog.digdir.no/v1/datasets/{dataset_id}"
 
-            fname = safe_filename(ds_title) + suffix
-            dest = staging_dir / safe_filename(ds_title) / fname
-            
-            time.sleep(REQUEST_DELAY_S_DATA_NORGE) # Be polite before downloading
+                time.sleep(REQUEST_DELAY_S_DATA_NORGE)
+                try:
+                    detail_resp = requests.get(
+                        resource_url,
+                        headers={"Accept": "application/json"},
+                        timeout=REQUEST_TIMEOUT_S,
+                    )
+                    detail_resp.raise_for_status()
+                except requests.RequestException as e:  # noqa: BLE001
+                    print(f"  Failed to fetch detailed record for {dataset_id}: {e}")
+                    continue
 
-            if not _download_resource(url_str, dest):
-                continue
+                full_ds = detail_resp.json()
 
-            append_manifest(
-                manifest_path,
-                {
-                    "source": "gov_data",
-                    "source_id": f"data.norge.no/{ds_title}",
-                    "license": str(license_info) if license_info else None,
-                    "local_path": str(dest.resolve()),
-                    "url": url_str,
-                },
-            )
-            downloaded_any = True
+                access_rights = full_ds.get("accessRights", {})
+                license_info = access_rights.get("code") or access_rights.get("uri")
 
-        if downloaded_any:
-            seen += 1
-            print(f"  [{seen}/{max_datasets}] {ds_title}")
+                distributions = full_ds.get("distribution") or []
+                if isinstance(distributions, dict):
+                    distributions = [distributions]
+
+                downloaded_any = False
+                for dist in distributions:
+                    if not isinstance(dist, dict):
+                        continue
+
+                    fmt = (_first_text(dist.get("format")) or "").lower()
+                    media_type = (_first_text(dist.get("mediaType")) or "").lower()
+
+                    url = dist.get("accessURL") or dist.get("downloadURL")
+                    if not url:
+                        continue
+
+                    url = _first_text(url) if isinstance(url, (list, dict)) else url
+                    url_str = str(url)
+                    url_lower = url_str.lower()
+
+                    fdk_formats = dist.get("fdkFormat") or []
+                    if isinstance(fdk_formats, list):
+                        for f_obj in fdk_formats:
+                            if isinstance(f_obj, dict):
+                                fmt += f" {str(f_obj.get('code', ''))} {str(f_obj.get('type', ''))}".lower()
+
+                    is_tabular = (
+                        any(k in fmt for k in ("csv", "comma", "tsv", "xls", "json")) or
+                        any(k in media_type for k in ("csv", "comma", "tsv", "xls", "json")) or
+                        any(url_lower.endswith(ext) for ext in (".csv", ".tsv", ".xlsx", ".xls", ".json"))
+                    )
+
+                    if not is_tabular:
+                        continue
+
+                    parsed_path = urlparse(url_str).path
+                    suffix = Path(parsed_path).suffix or ".csv"
+
+                    fname = safe_filename(ds_title) + suffix
+                    dest = staging_dir / safe_filename(ds_title) / fname
+
+                    time.sleep(REQUEST_DELAY_S_DATA_NORGE)
+
+                    if not _download_resource(url_str, dest):
+                        continue
+
+                    append_manifest(
+                        manifest_path,
+                        {
+                            "source": "gov_data",
+                            "source_id": f"data.norge.no/{ds_title}",
+                            "license": str(license_info) if license_info else None,
+                            "local_path": str(dest.resolve()),
+                            "url": url_str,
+                        },
+                    )
+                    downloaded_any = True
+
+                if downloaded_any:
+                    seen += 1
+                    print(f"  [{seen}/{max_datasets}] {ds_title}")
+
+            page_info = body.get("page") or {}
+            total_pages = page_info.get("totalPages", 1)
+
+            if page + 1 >= total_pages:
+                break
 
             page += 1
 
@@ -433,16 +507,13 @@ def _scrape_socrata(sub_cfg: dict, staging_dir: Path, manifest_path: str) -> Non
 def _scrape_owid(sub_cfg: dict, staging_dir: Path, manifest_path: str) -> None:
     """Direct downloads from OWID's own GitHub repos rather than an API --
     simpler and more robust than scraping their site, at the cost of only
-    covering the specific datasets listed in config. All three configured
-    URLs verified live (HTTP 200, real CSV content, tens of thousands of
-    rows) as of writing.
+    covering the specific datasets listed in config.
 
     License note: "CC-BY-4.0" reflects OWID's own stated reuse policy for
     their processed/compiled datasets, but some underlying source data
     they aggregate (e.g. COVID case data originally from Johns Hopkins
     CSSE) may carry different upstream attribution requirements OWID's
-    license doesn't fully capture. Fine for this pipeline's purposes, but
-    worth knowing if you need precise upstream attribution."""
+    license doesn't fully capture."""
     datasets = sub_cfg.get("datasets") or []
     if not datasets:
         print("No OWID datasets configured, skipping")
