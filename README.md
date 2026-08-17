@@ -112,21 +112,33 @@ dagster asset materialize -f definitions.py --select "*"
   docstring for exactly what's applied vs. silently ignored for this
   software variant.
 - **GitHub scraping requires `GITHUB_TOKEN`**; Kaggle scraping requires
-  `~/.kaggle/kaggle.json` or `KAGGLE_USERNAME`/`KAGGLE_KEY`; **data.gov
-  scraping requires `DATA_GOV_API_KEY`** (register free at
-  https://api.data.gov/signup/ -- falls back to the shared, rate-limited
-  `DEMO_KEY` if unset). data.norge.no needs no auth but is capped at 10
-  req/min. Both government endpoints were corrected mid-project after
-  their original URLs (`catalog.data.gov/api/3/...` and
-  `data.norge.no/api/dcat/datasets`) turned out to have been retired/moved
-  since this was first written -- verified against current official docs,
-  but response-shape parsing for data.norge.no's new search API is still
-  best-effort (see `_scrape_data_norge`'s docstring). None of the scrapers
-  have been run against live APIs in this environment (network access here
-  is restricted to package registries) -- the normalize and dedup/binning
-  stages *have* been tested end-to-end against synthetic staged files,
-  including exact-dup, near-dup, license-gate, and render-cap truncation
-  cases.
+  `~/.kaggle/kaggle.json` or `KAGGLE_USERNAME`/`KAGGLE_KEY`. **data.gov is
+  disabled by default** (`config/data_sources.yaml`'s `data_gov.enabled: false`)
+  since it requires registering a free API key at https://api.data.gov/signup/
+  and setting `DATA_GOV_API_KEY` -- flip it back on if you want that source;
+  the shared `DEMO_KEY` fallback exists but is too rate-limited for a real run.
+  data.norge.no, Eurostat, Socrata, and OWID need no auth. data.norge.no and
+  data.gov's original URLs (`catalog.data.gov/api/3/...` and
+  `data.norge.no/api/dcat/datasets`) were corrected mid-project after
+  turning out to have been retired/moved since this was first written.
+  **Socrata** (`_scrape_socrata`) queries the cross-portal Discovery API
+  covering hundreds of US federal/state/city open-data portals in one
+  request; `only=dataset` (singular, not plural) was confirmed against the
+  R `socratadata` package, a direct wrapper around the same API. **OWID**
+  (`_scrape_owid`) downloads three specific dataset families (CO2, energy,
+  COVID-19) directly from Our World in Data's GitHub repos rather than via
+  an API -- all three URLs verified live (HTTP 200, real CSV content,
+  tens of thousands of rows) by fetching them directly. Downloads are
+  resume-friendly: `_download_resource` skips re-fetching a file that
+  already exists and is non-empty, and cleans up partial files on failure
+  -- verified end-to-end (fresh download, skip-on-rerun, and
+  failure-cleanup all confirmed against live requests). Response-shape
+  parsing for data.norge.no's and Socrata's result JSON is still
+  best-effort (see each function's docstring) -- confirmed against
+  official docs and reference client libraries, but not against a live
+  response in this environment. The normalize and dedup/binning stages
+  *have* been tested end-to-end against synthetic staged files, including
+  exact-dup, near-dup, license-gate, and render-cap truncation cases.
 
 ## Directory layout
 
@@ -140,7 +152,7 @@ src/
   data_collection/
     common.py                # shared: manifests, hashing, license gate, near-dup signatures
     scrape_kaggle.py         # Kaggle API, license-filtered at search time
-    scrape_gov_data.py       # data.gov (CKAN via api.gsa.gov) + data.norge.no (search API) + Eurostat (SDMX)
+    scrape_gov_data.py       # data.gov (disabled by default) + data.norge.no + Eurostat + Socrata + OWID
     scrape_github.py         # GitHub code search for standalone .csv files
     normalize_to_csv.py      # xlsx/xls/ods/tsv/json -> canonical CSV, computes row/col counts
     dedup_and_bin.py         # license gate + exact/near dedup + shape-bin balancing + render_cap truncation -> data/raw_csv/
@@ -184,7 +196,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r src/data_collection/requirements.txt
 
 python src/data_collection/scrape_kaggle.py --config config/data_sources.yaml
-DATA_GOV_API_KEY=xxx python src/data_collection/scrape_gov_data.py --config config/data_sources.yaml
+python src/data_collection/scrape_gov_data.py --config config/data_sources.yaml  # data.gov disabled by default -- see config
 GITHUB_TOKEN=ghp_xxx python src/data_collection/scrape_github.py --config config/data_sources.yaml
 python src/data_collection/normalize_to_csv.py --config config/data_sources.yaml
 python src/data_collection/dedup_and_bin.py --config config/data_sources.yaml

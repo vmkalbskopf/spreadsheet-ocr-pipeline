@@ -7,11 +7,12 @@
 license_policy:
   allowed_licenses:
     ["CC0-1.0", "CC-BY-4.0", "CC-BY-SA-4.0", "MIT", "ODbL-1.0", "PDDL-1.0", "public-domain"]
-  # Government open-data portals (data.gov, data.norge.no, Eurostat) are
-  # policy-vetted at the portal level, so datasets from those sources are
-  # kept even when per-dataset license metadata is missing/unstructured --
-  # still recorded verbatim in the manifest for auditability, just not used
-  # as a filter gate the way it is for Kaggle/GitHub.
+  # Government open-data portals (data.gov, data.norge.no, Eurostat, Socrata,
+  # OWID) are policy-vetted at the portal level, so datasets from those
+  # sources are kept even when per-dataset license metadata is
+  # missing/unstructured -- still recorded verbatim in the manifest for
+  # auditability, just not used as a filter gate the way it is for
+  # Kaggle/GitHub.
   trust_portal_level_for_sources: ["gov_data"]
   # For sources NOT in trust_portal_level_for_sources (kaggle, github_csv_search):
   # a dataset with missing/unrecognized license metadata is dropped, not kept.
@@ -26,13 +27,11 @@ sources:
   gov_data:
     enabled: true
     data_gov:
+      # Disabled: requires registering for a free API key at
+      # https://api.data.gov/signup/ (the shared DEMO_KEY fallback is too
+      # rate-limited for a real scrape run) -- skipped in favor of the four
+      # sources below, none of which need registration.
       enabled: false
-      # data.gov migrated its API off the old open catalog.data.gov/api/3
-      # endpoint (that one now 404s) to a registration-gated endpoint under
-      # api.gsa.gov. Register a free key at https://api.data.gov/signup/ and
-      # set DATA_GOV_API_KEY in your environment -- DEMO_KEY works for a
-      # quick smoke test but is shared/rate-limited across everyone using it,
-      # not suitable for a real scrape run.
       endpoint: "https://api.gsa.gov/technology/datagov/v3/action/package_search"
       query_terms: ["csv", "dataset", "survey", "inventory"]
       max_datasets: 2000
@@ -46,6 +45,7 @@ sources:
       endpoint: "https://search.api.fellesdatakatalog.digdir.no/search/datasets"
       query_terms: ["csv"]  # useful for NO/Nordic headers
       max_datasets: 1500
+
     eurostat:
       enabled: true
       endpoint: "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data"
@@ -53,15 +53,23 @@ sources:
       # by known dataset code. Fill in codes of interest here; the table
       # listing at https://ec.europa.eu/eurostat/databrowser/ has the codes.
       dataset_codes: ["tps00001", "nama_10_gdp", "demo_pjan"]
+
     socrata:
       enabled: true
+      # Cross-portal Discovery API -- covers hundreds of US federal/state/
+      # city open-data portals (data.cdc.gov, data.cityofnewyork.us,
+      # data.texas.gov, etc.) running on the Socrata platform, in one query.
       endpoint: "https://api.us.socrata.com/api/catalog/v1"
       max_datasets: 1000
       query_terms: ["csv", "demographics", "survey", "health", "metrics"]
-      
+
     owid:
       enabled: true
-      # OWID uses direct GitHub links for their master datasets
+      # Our World in Data: direct GitHub CSV downloads rather than an API.
+      # All three URLs verified live as of writing (HTTP 200, real CSV
+      # content). Add more from https://github.com/owid as needed --
+      # OWID hosts one repo per dataset family, each with a master CSV at
+      # a predictable raw.githubusercontent.com path.
       datasets:
         - name: "co2_data"
           url: "https://raw.githubusercontent.com/owid/co2-data/master/owid-co2-data.csv"
@@ -126,4 +134,3 @@ output:
   sources_manifest_path: "data/manifests/sources_manifest.jsonl"     # scraper provenance
   normalized_manifest_path: "data/manifests/normalized_manifest.jsonl"
   final_manifest_path: "data/manifests/raw_csv_manifest.jsonl"       # what training reads from
-
