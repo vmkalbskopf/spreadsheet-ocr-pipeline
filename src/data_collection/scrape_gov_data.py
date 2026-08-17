@@ -204,96 +204,104 @@ def _scrape_data_norge(sub_cfg: dict, staging_dir: Path, manifest_path: str) -> 
     query_terms = sub_cfg.get("query_terms") or [""]  # empty string = match-all-ish
     seen = 0
 
-    for term in query_terms:
+    for ds_summary in hits:
         if seen >= max_datasets:
             break
-        print(f"Searching data.norge.no for: '{term}'")
-        page = 0
-        page_size = 100
-        while seen < max_datasets:
-            time.sleep(REQUEST_DELAY_S_DATA_NORGE)
-            try:
-                resp = requests.post(
-                    endpoint,
-                    json={"query": term, "pagination": {"size": page_size, "page": page}},
-                    headers={"Content-Type": "application/json"},
-                    timeout=REQUEST_TIMEOUT_S,
-                )
-                resp.raise_for_status()
-            except requests.RequestException as e:  # noqa: BLE001
-                print(f"  search failed: {e}")
-                break
+            
+        if not isinstance(ds_summary, dict):
+            continue
 
-            body = resp.json()
-            # UNVERIFIED exact key -- "hits" is the common Elasticsearch-proxy
-            # convention this type of service tends to follow; falling back
-            # to a couple of alternates in case the actual shape differs.
-            hits = body.get("hits") or body.get("results") or body.get("datasets") or []
-            if not hits:
-                break
+        dataset_id = ds_summary.get("id")
+        if not dataset_id:
+            continue
+            
+        ds_title = _first_text(ds_summary.get("title")) or dataset_id
+        
+        # --- THE TWO-STEP FETCH ---
+        # Fellesdatakatalog Resource API endpoint for full DCAT records
+        resource_url = f"https://resource.api.fellesdatakatalog.digdir.no/v1/datasets/{dataset_id}"
+        
+        time.sleep(REQUEST_DELAY_S_DATA_NORGE)  # Respect rate limit for the secondary GET request
+        try:
+            detail_resp = requests.get(
+                resource_url,
+                headers={"Accept": "application/json"},
+                timeout=REQUEST_TIMEOUT_S,
+            )
+            detail_resp.raise_for_status()
+        except requests.RequestException as e:  # noqa: BLE001
+            print(f"  Failed to fetch detailed record for {dataset_id}: {e}")
+            continue
+            
+        full_ds = detail_resp.json()
+        
+        # Extract metadata from the COMPLETE record, not the summary
+        access_rights = full_ds.get("accessRights", {})
+        license_info = access_rights.get("code") or access_rights.get("uri")
 
-            for ds in hits:
-                if seen >= max_datasets:
-                    break
-                ds_title = _first_text(ds.get("title")) or ds.get("id", "unknown")
-                license_info = ds.get("license") or ds.get("accessRights")
+        # The full record will contain the actual distributions array
+        distributions = full_ds.get("distribution") or []
+        if isinstance(distributions, dict):
+            distributions = [distributions]
 
-                distributions = ds.get("distribution") or []
-                if isinstance(distributions, dict):
-                    distributions = [distributions]
+        downloaded_any = False
+        for dist in distributions:
+            if not isinstance(dist, dict):
+                continue
 
-                downloaded_any = False
-                for dist in distributions:
-                    if not isinstance(dist, dict):
-                        continue
+            fmt = (_first_text(dist.get("format")) or "").lower()
+            media_type = (_first_text(dist.get("mediaType")) or "").lower()
 
-                    fmt = (_first_text(dist.get("format")) or "").lower()
-                    media_type = (_first_text(dist.get("mediaType")) or "").lower()
+            url = dist.get("accessURL") or dist.get("downloadURL")
+            if not url:
+                continue
 
-                    url = dist.get("accessURL") or dist.get("downloadURL")
-                    if not url:
-                        continue
+            url = _first_text(url) if isinstance(url, (list, dict)) else url
+            url_str = str(url)
+            url_lower = url_str.lower()
 
-                    url = _first_text(url) if isinstance(url, (list, dict)) else url
-                    url_str = str(url)
-                    url_lower = url_str.lower()
+            # Check FDK's normalized format list if available on the distribution
+            fdk_formats = dist.get("fdkFormat") or []
+            if isinstance(fdk_formats, list):
+                for f_obj in fdk_formats:
+                    if isinstance(f_obj, dict):
+                        fmt += f" {str(f_obj.get('code', ''))} {str(f_obj.get('type', ''))}".lower()
 
-                    # DCAT media types are often full URIs. Broaden the check.
-                    is_tabular = (
-                        any(k in fmt for k in ("csv", "comma", "tsv", "xls", "json")) or
-                        any(k in media_type for k in ("csv", "comma", "tsv", "xls", "json")) or
-                        any(url_lower.endswith(ext) for ext in (".csv", ".tsv", ".xlsx", ".xls", ".json"))
-                    )
+            is_tabular = (
+                any(k in fmt for k in ("csv", "comma", "tsv", "xls", "json")) or
+                any(k in media_type for k in ("csv", "comma", "tsv", "xls", "json")) or
+                any(url_lower.endswith(ext) for ext in (".csv", ".tsv", ".xlsx", ".xls", ".json"))
+            )
 
-                    if not is_tabular:
-                        continue
+            if not is_tabular:
+                continue
 
-                    # Cleanly extract extension from URL path without query params
-                    parsed_path = urlparse(url_str).path
-                    suffix = Path(parsed_path).suffix or ".csv"
+            parsed_path = urlparse(url_str).path
+            suffix = Path(parsed_path).suffix or ".csv"
 
-                    fname = safe_filename(ds_title) + suffix
-                    dest = staging_dir / safe_filename(ds_title) / fname
-                    time.sleep(REQUEST_DELAY_S_DATA_NORGE)
+            fname = safe_filename(ds_title) + suffix
+            dest = staging_dir / safe_filename(ds_title) / fname
+            
+            time.sleep(REQUEST_DELAY_S_DATA_NORGE) # Be polite before downloading
 
-                    if not _download_resource(url_str, dest):
-                        continue
+            if not _download_resource(url_str, dest):
+                continue
 
-                    append_manifest(
-                        manifest_path,
-                        {
-                            "source": "gov_data",
-                            "source_id": f"data.norge.no/{ds_title}",
-                            "license": str(license_info) if license_info else None,
-                            "local_path": str(dest.resolve()),
-                            "url": url_str,
-                        },
-                    )
-                    downloaded_any = True
+            append_manifest(
+                manifest_path,
+                {
+                    "source": "gov_data",
+                    "source_id": f"data.norge.no/{ds_title}",
+                    "license": str(license_info) if license_info else None,
+                    "local_path": str(dest.resolve()),
+                    "url": url_str,
+                },
+            )
+            downloaded_any = True
 
-                if downloaded_any:
-                    seen += 1
-                    print(f"  [{seen}/{max_datasets}] {ds_title}")
+        if downloaded_any:
+            seen += 1
+            print(f"  [{seen}/{max_datasets}] {ds_title}")
 
             page += 1
 
