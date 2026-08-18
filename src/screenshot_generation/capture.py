@@ -32,10 +32,22 @@ from variation_sampler import ScreenshotConfig
 
 
 class VirtualDisplay:
+    """Owns both the Xvfb X server and a minimal EWMH-compliant window
+    manager (fluxbox) on the same display. Xvfb alone provides no window
+    manager, so it never advertises _NET_ACTIVE_WINDOW support -- any
+    `xdotool windowactivate` call against a bare Xvfb display (see
+    capture.py's own maximize_or_resize_window and
+    render_onlyoffice.py's apply_config_onlyoffice) fails with "Your
+    windowmanager claims not to support _NET_ACTIVE_WINDOW". fluxbox is
+    started here, once, right after Xvfb comes up, so every caller of this
+    context manager gets a display that window activation actually works
+    on -- fixing this in one place rather than at each xdotool call site."""
+
     def __init__(self, resolution: str, display_num: int = 99):
         self.resolution = resolution
         self.display_num = display_num
         self._proc: subprocess.Popen | None = None
+        self._wm_proc: subprocess.Popen | None = None
 
     def __enter__(self):
         w, h = self.resolution.split("x")
@@ -45,9 +57,28 @@ class VirtualDisplay:
             stderr=subprocess.DEVNULL,
         )
         time.sleep(1.0)  # let Xvfb come up before anything tries to connect
-        return f":{self.display_num}"
+
+        display = f":{self.display_num}"
+        self._wm_proc = subprocess.Popen(
+            ["fluxbox"],
+            env={"DISPLAY": display},
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1.0)  # let fluxbox register its EWMH hints (_NET_ACTIVE_WINDOW etc.)
+        return display
 
     def __exit__(self, *exc):
+        # Tear down fluxbox first -- it's a client of the Xvfb server, so
+        # stopping it before its server keeps shutdown ordering clean, though
+        # nothing downstream currently depends on that ordering specifically.
+        if self._wm_proc:
+            self._wm_proc.terminate()
+            try:
+                self._wm_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._wm_proc.kill()
+                self._wm_proc.wait(timeout=5)
         if self._proc:
             self._proc.terminate()
             try:

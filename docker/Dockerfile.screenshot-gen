@@ -32,7 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-calc \
     libreoffice-script-provider-python \
     python3 python3-pip python3-uno \
-    xvfb xdotool wmctrl imagemagick \
+    xvfb xdotool wmctrl imagemagick fluxbox \
     fonts-liberation fonts-crosextra-carlito \
     wget ca-certificates gnupg \
     libgtk-3-0 libnss3 libasound2t64 \
