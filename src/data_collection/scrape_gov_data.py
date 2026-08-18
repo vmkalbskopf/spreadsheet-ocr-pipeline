@@ -224,16 +224,16 @@ def _scrape_data_gov(sub_cfg: dict, staging_dir: Path, manifest_path: str) -> No
 
 # --- data.norge.no (search.api.fellesdatakatalog.digdir.no) -------------
 #
-# Uses the current POST-based Elasticsearch search API
-# (https://data.norge.no/technical/api/search), which replaced the old
-# GET /api/dcat/datasets endpoint. No auth required.
-#
-# Response-shape caveat: the documented request format is confirmed against
-# the official docs (query + pagination in a JSON body), but the exact
-# response JSON schema for individual hits was NOT independently verified
-# against a live response. Confirm against an actual response and adjust
-# field names (e.g. `id` vs `_id`/`_source`) if dataset information isn't
-# coming through.
+# Two-step fetch, confirmed against a real response (not a guess):
+#   1. POST to the search API for a lightweight `hits` list (id + title only,
+#      not full distribution/format info).
+#   2. GET https://resource.api.fellesdatakatalog.digdir.no/v1/datasets/{id}
+#      per hit for the full DCAT record (accessRights, distribution list).
+# The resource.api hostname is confirmed real (shows up across multiple
+# official EU Open Data Portal harvest records), but its own rate limit
+# is unconfirmed -- REQUEST_DELAY_S_DATA_NORGE (paced to the SEARCH API's
+# documented 10 req/min) is used for it too as a conservative default,
+# not because that limit is confirmed to apply here specifically.
 
 def _scrape_data_norge(sub_cfg: dict, staging_dir: Path, manifest_path: str) -> None:
     endpoint = sub_cfg["endpoint"]
@@ -350,7 +350,16 @@ def _scrape_data_norge(sub_cfg: dict, staging_dir: Path, manifest_path: str) -> 
                     fname = safe_filename(ds_title) + suffix
                     dest = staging_dir / safe_filename(ds_title) / fname
 
-                    time.sleep(REQUEST_DELAY_S_DATA_NORGE)
+                    # NOT REQUEST_DELAY_S_DATA_NORGE here -- that delay is
+                    # calibrated to fellesdatakatalog.digdir.no's documented
+                    # 10 req/min limit, but this request goes to the
+                    # distribution's own accessURL, which is frequently a
+                    # completely different host. Pacing it against a rate
+                    # limit that doesn't apply to this request just makes
+                    # the run slower for no protective benefit -- at
+                    # max_datasets=1500 the difference is roughly 5.4 hours
+                    # vs 2.9 hours worst-case.
+                    time.sleep(REQUEST_DELAY_S)
 
                     if not _download_resource(url_str, dest):
                         continue

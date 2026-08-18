@@ -130,15 +130,29 @@ dagster asset materialize -f definitions.py --select "*"
   an API -- all three URLs verified live (HTTP 200, real CSV content,
   tens of thousands of rows) by fetching them directly. Downloads are
   resume-friendly: `_download_resource` skips re-fetching a file that
-  already exists and is non-empty, and cleans up partial files on failure
-  -- verified end-to-end (fresh download, skip-on-rerun, and
-  failure-cleanup all confirmed against live requests). Response-shape
-  parsing for data.norge.no's and Socrata's result JSON is still
-  best-effort (see each function's docstring) -- confirmed against
-  official docs and reference client libraries, but not against a live
-  response in this environment. The normalize and dedup/binning stages
-  *have* been tested end-to-end against synthetic staged files, including
-  exact-dup, near-dup, license-gate, and render-cap truncation cases.
+  already exists and is non-empty, cleans up partial files on failure, and
+  now also detects HTML served with a 200 status (both via Content-Type
+  header and by sniffing the first 200 bytes for `<html`/`<!doctype html`)
+  so a redirected/broken URL doesn't silently end up staged as if it were
+  real tabular data -- verified end-to-end (fresh download, skip-on-rerun,
+  and failure-cleanup all confirmed against live requests). **data.norge.no**
+  (`_scrape_data_norge`) was rewritten against a real response (not a
+  guess) into a two-step fetch: search for lightweight hits, then a
+  per-dataset detail GET to `resource.api.fellesdatakatalog.digdir.no` for
+  the full record -- that hostname is confirmed real (appears across
+  official EU Open Data Portal harvest records) though its own rate limit
+  isn't documented, so it's paced conservatively. **Socrata**
+  (`_scrape_socrata`) queries the cross-portal Discovery API covering
+  hundreds of US federal/state/city open-data portals in one request;
+  `only=dataset` (singular, not plural) was confirmed against the R
+  `socratadata` package, a direct wrapper around the same API. **OWID**
+  (`_scrape_owid`) downloads three specific dataset families (CO2, energy,
+  COVID-19) directly from Our World in Data's GitHub repos rather than via
+  an API -- all three URLs verified live (HTTP 200, real CSV content,
+  tens of thousands of rows) by fetching them directly. The normalize and
+  dedup/binning stages *have* been tested end-to-end against synthetic
+  staged files, including exact-dup, near-dup, license-gate, and
+  render-cap truncation cases.
 
 ## Directory layout
 
