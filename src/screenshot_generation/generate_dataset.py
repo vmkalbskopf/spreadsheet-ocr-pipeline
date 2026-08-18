@@ -258,6 +258,8 @@ def process_onlyoffice_group(
     resolution: str, items: list[WorkItem], out_dir: Path, manifest_f
 ) -> None:
     print(f"-- OnlyOffice, resolution {resolution}: {len(items)} screenshots --")
+    max_consecutive_failures = 5
+    consecutive_failures = 0
     with VirtualDisplay(resolution=resolution) as display:
         signal.signal(signal.SIGALRM, _alarm_handler)
         for i, item in enumerate(items):
@@ -266,6 +268,7 @@ def process_onlyoffice_group(
                 signal.alarm(PER_DOC_TIMEOUT_S)
                 process_onlyoffice_item(item, out_dir, display, manifest_f)
                 signal.alarm(0)
+                consecutive_failures = 0
             except DocumentTimeoutError as e:
                 # No shared session to restart here (each doc is its own
                 # process already) -- just log and move to the next item.
@@ -275,9 +278,18 @@ def process_onlyoffice_group(
                 # timeout itself is too short.
                 print(f"    TIMEOUT: {e}")
                 signal.alarm(0)
+                consecutive_failures += 1
             except Exception as e:  # noqa: BLE001
                 signal.alarm(0)
+                consecutive_failures += 1
                 print(f"    FAILED: {e}")
+
+            if consecutive_failures >= max_consecutive_failures:
+                print(
+                    f"    ABORTING OnlyOffice group: {consecutive_failures} consecutive failures. "
+                    f"Check WINDOW_TITLE_HINT / xdotool configuration."
+                )
+                break
 
 
 def main():

@@ -154,9 +154,14 @@ def _select_cell_range(display: str, window_id: str, n_cells: int) -> None:
 
 
 def close_onlyoffice(proc: subprocess.Popen) -> None:
-    proc.terminate()
     try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=5)
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=3)
+    except Exception:
+        pass
+    # Clean up any orphaned child processes from OnlyOffice/desktopeditors
+    subprocess.run(["pkill", "-9", "-f", ONLYOFFICE_BINARY], capture_output=True)

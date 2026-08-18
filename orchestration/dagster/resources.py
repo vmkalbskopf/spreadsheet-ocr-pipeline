@@ -31,7 +31,7 @@ class DockerRunner(ConfigurableResource):
             "-v", f"{root / 'config'}:/app/config:ro",
         ]
 
-    def run_screenshot_gen(self, shard_index: int, n_shards: int) -> None:
+    def run_screenshot_gen(self, shard_index: int, n_shards: int, timeout_s: int = 7200) -> None:
         cmd = [
             "docker", "run", "--rm",
             *self._base_mounts(),
@@ -42,7 +42,7 @@ class DockerRunner(ConfigurableResource):
             "--shard-index", str(shard_index),
             "--n-shards", str(n_shards),
         ]
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, timeout=timeout_s)
 
     def run_training(self, entrypoint_override: list[str] | None = None) -> None:
         """entrypoint_override lets the same image run prepare_dataset.py,
