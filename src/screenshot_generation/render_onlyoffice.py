@@ -40,6 +40,7 @@ running instance).
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 
@@ -54,10 +55,41 @@ APP_STARTUP_WAIT_S = 4.0  # Electron-based UI is slower to cold-start than soffi
 POST_ACTION_SETTLE_S = 0.3
 
 
+def _display_env(display: str) -> dict[str, str]:
+    """Environment for every subprocess call in this module.
+
+    Two things this fixes, both learned the hard way:
+
+    1. Passing env={"DISPLAY": display} (the previous approach) *replaces*
+       the subprocess's entire environment rather than adding to it, which
+       silently strips PATH, HOME, etc. from every xdotool/desktopeditors
+       call in this file. Start from a copy of the real environment and
+       overlay onto it instead.
+
+    2. QT_QPA_PLATFORMTHEME is forced to "" to stop Qt from auto-loading
+       its GTK3 theme bridge. DesktopEditors is Qt5/XCB, but libgtk-3 is
+       also present in this image, and Qt tries to bridge into GTK3 for
+       native-looking widget theming by default when that's the case. That
+       bridge opens its own separate GDK display connection, independent
+       of Qt's XCB one -- and in this minimal container (no icon theme, no
+       gsettings schemas, no D-Bus session) that GDK-side init crashes the
+       whole process before any window is created:
+         Gtk-ERROR: Can't create a GtkStyleContext without a display
+         connection
+       We don't need themed native widgets for screenshot automation, so
+       disabling the bridge entirely sidesteps it rather than trying to
+       make GTK theming work in a container that was never set up for it.
+    """
+    env = os.environ.copy()
+    env["DISPLAY"] = display
+    env["QT_QPA_PLATFORMTHEME"] = ""
+    return env
+
+
 def launch_onlyoffice(display: str, csv_path: str) -> subprocess.Popen:
     proc = subprocess.Popen(
         [ONLYOFFICE_BINARY, csv_path],
-        env={"DISPLAY": display},
+        env=_display_env(display),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -74,7 +106,7 @@ def find_onlyoffice_window(display: str, timeout_s: float = 15.0) -> str:
     while time.time() - start < timeout_s:
         result = subprocess.run(
             ["xdotool", "search", "--name", WINDOW_TITLE_HINT],
-            env={"DISPLAY": display},
+            env=_display_env(display),
             capture_output=True,
             text=True,
         )
@@ -87,7 +119,7 @@ def find_onlyoffice_window(display: str, timeout_s: float = 15.0) -> str:
     # a manual Xvfb+xdotool session just to see what the real title is.
     seen = subprocess.run(
         ["xdotool", "search", "--name", "", "getwindowname", "%@"],
-        env={"DISPLAY": display},
+        env=_display_env(display),
         capture_output=True,
         text=True,
     )
@@ -102,7 +134,7 @@ def find_onlyoffice_window(display: str, timeout_s: float = 15.0) -> str:
 def _xdotool_key(display: str, window_id: str, keys: str) -> None:
     subprocess.run(
         ["xdotool", "key", "--window", window_id, keys],
-        env={"DISPLAY": display},
+        env=_display_env(display),
         check=True,
     )
     time.sleep(POST_ACTION_SETTLE_S)
@@ -111,7 +143,7 @@ def _xdotool_key(display: str, window_id: str, keys: str) -> None:
 def apply_config_onlyoffice(display: str, window_id: str, cfg: ScreenshotConfig) -> None:
     """Applies the subset of ScreenshotConfig that OnlyOffice's UI exposes
     via keyboard shortcut. See module docstring for what's NOT covered."""
-    subprocess.run(["xdotool", "windowactivate", window_id], env={"DISPLAY": display}, check=True)
+    subprocess.run(["xdotool", "windowactivate", window_id], env=_display_env(display), check=True)
     time.sleep(POST_ACTION_SETTLE_S)
 
     _apply_zoom(display, window_id, cfg.zoom_pct)
