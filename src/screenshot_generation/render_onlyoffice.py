@@ -82,9 +82,20 @@ def find_onlyoffice_window(display: str, timeout_s: float = 15.0) -> str:
         if window_ids:
             return window_ids[0]
         time.sleep(0.5)
+    # Dump whatever windows *did* exist on the display, titles included, so
+    # the failure is self-diagnosing -- no need to re-run this by hand under
+    # a manual Xvfb+xdotool session just to see what the real title is.
+    seen = subprocess.run(
+        ["xdotool", "search", "--name", "", "getwindowname", "%@"],
+        env={"DISPLAY": display},
+        capture_output=True,
+        text=True,
+    )
+    seen_titles = seen.stdout.strip() or "(no windows found at all -- check the app launched)"
     raise RuntimeError(
         f"No OnlyOffice window matching '{WINDOW_TITLE_HINT}' appeared within {timeout_s}s "
-        f"on {display} -- WINDOW_TITLE_HINT likely needs correcting for your installed version."
+        f"on {display} -- WINDOW_TITLE_HINT likely needs correcting for your installed version.\n"
+        f"Windows actually present on {display}:\n{seen_titles}"
     )
 
 
